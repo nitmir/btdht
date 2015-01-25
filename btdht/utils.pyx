@@ -181,12 +181,12 @@ cdef _decode_int(char* data, int *i, int max):
     #cdef long long ll[1]
     #_decode_long(data, i, max, ll)
     with nogil:
-        if data[i[0]] == 'i':
+        if data[i[0]] == b'i':
             i[0]+=1
             j = i[0]
-            while data[j]!='e' and j < max:
+            while data[j]!=b'e' and j < max:
                 j+=1
-            if data[j] == 'e':
+            if data[j] == b'e':
                 with gil:
                     myint=int(data[i[0]:j])
                     i[0]=j+1
@@ -205,14 +205,14 @@ cdef _decode_list(char* data, int* i, int max):
     cdef int j[1]
     i[0]+=1
     l = []
-    while data[i[0]] != 'e':
+    while data[i[0]] != b'e':
             #if i[0] > 1000000 and (i[0] % 100) == 0:
             #    sys.stdout.write("\r%08d B " % (max -  i[0]))
-            if data[i[0]] == 'i':
+            if data[i[0]] == b'i':
                 l.append(_decode_int(data, i, max))
-            elif data[i[0]] == 'l':
+            elif data[i[0]] == b'l':
                 l.append(_decode_list(data, i, max))
-            elif data[i[0]] == 'd':
+            elif data[i[0]] == b'd':
                 l.append(_decode_dict(data, i, max))
             elif isdigit(data[i[0]]):
                 with nogil:
@@ -227,7 +227,7 @@ cdef _decode_dict(char* data, int* i, int max):
     cdef int j[1]
     i[0]+=1
     d = {}
-    while data[i[0]] != 'e':
+    while data[i[0]] != b'e':
             #if i[0] > 2000 and (i[0] % 100) == 0:
             #    sys.stdout.write("\r%08d B " % (max - i[0]))
             if isdigit(data[i[0]]):
@@ -236,13 +236,13 @@ cdef _decode_dict(char* data, int* i, int max):
                 key = data[j[0]:i[0]]
             else:
                 raise ValueError("??? key must by string")
-            if data[i[0]] == 'e':
+            if data[i[0]] == b'e':
                 raise ValueError("??? key without value")
-            if data[i[0]] == 'i':
+            if data[i[0]] == b'i':
                 d[key]=_decode_int(data, i, max)
-            elif data[i[0]] == 'l':
+            elif data[i[0]] == b'l':
                 d[key]=_decode_list(data, i, max)
-            elif data[i[0]] == 'd':
+            elif data[i[0]] == b'd':
                 d[key]=_decode_dict(data, i, max)
             elif isdigit(data[i[0]]):
                 with nogil:
@@ -258,13 +258,13 @@ cdef _decode(char* data, int max):
     cdef int j[1]
     i[0]=0
     try:
-        if data[i[0]] == 'i':
+        if data[i[0]] == b'i':
             ii = _decode_int(data, i, max)
             return ii, data[i[0]:max]
-        elif data[i[0]] == 'l':
+        elif data[i[0]] == b'l':
             l = _decode_list(data, i, max)
             return l, data[i[0]:max]
-        elif data[i[0]] == 'd':
+        elif data[i[0]] == b'd':
             d = _decode_dict(data, i, max)
             return d, data[i[0]:max]
         elif data[i[0]].isdigit():

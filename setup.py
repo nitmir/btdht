@@ -2,8 +2,8 @@
 import os
 from distutils.core import setup
 from distutils.extension import Extension
-from Cython.Build import cythonize
 import distutils.command.clean
+from Cython.Distutils import build_ext
 
 
 class clean(distutils.command.clean.clean):
@@ -31,9 +31,8 @@ setup(
     description="efficency full implementation of the bittorent mainline dht",
     url='https://github.com/nitmir/btdht/',
     packages = ['btdht'],
-    cmdclass={'clean':clean},
-
-    ext_modules = cythonize(extensions),
+    cmdclass={'clean':clean, 'build_ext': build_ext},
+    ext_modules = extensions,
 
     classifiers=[
         'Development Status :: 4 - Beta',

@@ -631,7 +631,7 @@ cdef class DHT_BASE:
                     try:
                         self._update_node(obj)
                     except TypeError:
-                        print "TypeError: %r in _recv_loop" % obj
+                        print("TypeError: %r in _recv_loop" % obj)
                         raise
                     # On query
                     if obj.y == "q":
@@ -865,7 +865,7 @@ cdef class DHT_BASE:
             try:
                 self.root.add(self, node)
             except AttributeError:
-                print "AttributeError: %r in _on_find_node_response" % node
+                print("AttributeError: %r in _on_find_node_response" % node)
                 raise
         self.debug(2, "%s nodes added to routing table" % len(nodes))
     def _on_get_peers_response(self, query, response):
@@ -1000,7 +1000,7 @@ cdef class Node:
         """
         cdef char* cip
         cdef char* cid
-        if ip[0] == '0':
+        if ip[0] == b'0':
             raise ValueError("IP start with 0 *_* %r %r" % (ip, self._ip[:4]))
         tip = socket.inet_aton(ip)
         cip = tip
@@ -1078,7 +1078,7 @@ cdef class Node:
             return ip
         def __set__(self, char *ip):
             cdef char* cip
-            if ip[0] == '0':
+            if ip[0] == b'0':
                 raise ValueError("IP start with 0 *_* %r %r" % (ip, self._ip[:4]))
             tip = socket.inet_aton(ip)
             cip = tip
