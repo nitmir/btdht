@@ -30,6 +30,39 @@ def __init():
 __init()
 del __init
 
+cdef char _longid_to_char(char* id) nogil:
+    cdef unsigned char i = 0
+    if id[0] == 1:
+        i = i | (1 << 7)
+    if id[1] == 1:
+        i = i | (1 << 6)
+    if id[2] == 1:
+        i = i | (1 << 5)
+    if id[3] == 1:
+        i = i | (1 << 4)
+    if id[4] == 1:
+        i = i | (1 << 3)
+    if id[5] == 1:
+        i = i | (1 << 2)
+    if id[6] == 1:
+        i = i | (1 << 1)
+    if id[7] == 1:
+        i = i | (1 << 0)
+    return i
+
+cdef char* _longid_to_id(char* longid, int size=160) nogil except NULL:
+    cdef int i
+    cdef char* id
+    if size/8*8 != size:
+        with gil:
+            raise ValueError("size must be a multiple of 8")
+    id = <char*>malloc((size / 8) * sizeof(char))
+    i=0
+    while i < size:
+        id[i/8] = _longid_to_char(longid + i)
+        i+=8
+    return id
+
 cdef char* _id_to_longid(char* id, int size=20) nogil:
     global BYTE_TO_BIT
     cdef char* ret = <char*>malloc((size * 8) * sizeof(char))
