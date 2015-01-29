@@ -1328,6 +1328,7 @@ cdef class Node:
         else:
             raise NoTokenError()
 
+@total_ordering
 class Bucket(list):
     """A bucket of nodes in the routing table
 
@@ -1498,6 +1499,22 @@ class Bucket(list):
 
     def __hash__(self):
         return hash(utils.id_to_longid(str(self.id))[:self.id_length])
+
+    def __eq__(self, other):
+        try:
+            return self.id_length == other.id_length and self.id == other.id
+        except AttributeError as e:
+            print ("%r" % e)
+            return False
+
+    def __lt__(self, other):
+        try:
+            if self.id_length == other.id_length:
+                return self.id < other.id
+            else:
+                return self.id_length < other.id_length
+        except AttributeError:
+            raise ValueError("%s not comparable with %s" % (other.__class__.__name__, self.__class__.__name__))
 
 class DHT(DHT_BASE):
     pass
