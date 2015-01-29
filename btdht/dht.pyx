@@ -56,7 +56,7 @@ cdef class DHT_BASE:
     cdef char _myid[20]
 
     def __init__(self, routing_table=None, bind_port=None, bind_ip="0.0.0.0",
-      id=None, ignored_ip=[], debuglvl=0, prefix="", master=False):
+      id=None, ignored_ip=[], debuglvl=0, prefix="", master=False, process_queue_size=500):
         """
         Note:
            try to use same `id` and `bind_port` over dht restart to increase
@@ -75,6 +75,9 @@ cdef class DHT_BASE:
           debuglvl (int, optional): Level of verbosity, default to 0
           master (bool, optional): A boolean value to disting a particular dht
             instance among several other then subclassing. Unused. default to False
+          process_queue_size(int, optional): Size of the queue of messages waiting
+            to be processed by user function (on_`msg`_(query|response)). see
+            the `register_message` method. default to 500.
         """
 
         # checking the provided id or picking a random one
@@ -100,6 +103,8 @@ cdef class DHT_BASE:
         self._get_peer_loop_list = []
         self._get_peer_loop_lock = {}
         self._get_closest_loop_lock = {}
+        self._to_process = Queue.Queue(maxsize=process_queue_size)
+        self._to_process_registered = set()
 
         self.bind_port = bind_port
         self.bind_ip = bind_ip
@@ -216,7 +221,8 @@ cdef class DHT_BASE:
         self.init_socket()
 
         self.threads = []
-        for f, name in [(self._recv_loop, 'recv'), (self._send_loop, 'send'), (self._routine, 'routine'), (self._get_peers_closest_loop, 'get_peers_closest')]:
+        for f, name in [(self._recv_loop, 'recv'), (self._send_loop, 'send'), (self._routine, 'routine'),
+                          (self._get_peers_closest_loop, 'get_peers_closest'), (self._process_loop, 'process_msg')]:
             t = Thread(target=f)
             t.setName("%s:%s" % (self.prefix, name))
             t.daemon = True
@@ -792,6 +798,19 @@ cdef class DHT_BASE:
                 self.debug(0 if in_s <= 0 and out_s > 0 and goods < 20 else 1, "%d nodes, %d goods, %d bads | in: %s, out: %s en %ss" % (nodes, goods, bads, in_s, out_s, int(delta)))
 
 
+    def register_message(self, msg):
+        """register a dht message to be processed
+
+        Note:
+          on query receival, the function on_`msg`_query will be call with the
+            query as parameter
+          on response receival, the function on_`msg`_response will be called with
+            the query and the response as parameters
+
+        Args:
+          msg (str): a dht message type like ping, find_node, get_peers or announce_peer
+        """
+        self._to_process_registered.add(msg)
 
     def on_error(self, error, query=None):
         """function called then a query has be responded by an error message. Can safely the overloaded
@@ -893,19 +912,50 @@ cdef class DHT_BASE:
         pass
     def _on_announce_peer_query(self, query):
         if query.get("implied_port", 0) != 0:
-            self._add_peer(info_hash=query["info_hash"], ip=query.addr[0], port=query.addr[1])
+            if query.addr[1] > 0 and query.addr[1] < 65536:
+                self._add_peer(info_hash=query["info_hash"], ip=query.addr[0], port=query.addr[1])
+            else:
+                self.debug(1, "Invalid port number on announce %s, sould be within 1 and 65535" % query.addr[1])
         else:
-            self._add_peer(info_hash=query["info_hash"], ip=query.addr[0], port=query["port"])
+            if query["port"] > 0 and query["port"] < 65536:
+                self._add_peer(info_hash=query["info_hash"], ip=query.addr[0], port=query["port"])
+            else:
+                self.debug(1, "Invalid port number on announce %s, sould be within 1 and 65535" % query["port"])
 
 
     def _process_response(self, obj, query):
         if query.q in ["find_node", "ping", "get_peers", "announce_peer"]:
             getattr(self, '_on_%s_response' % query.q)(query, obj)
-            getattr(self, 'on_%s_response' % query.q)(query, obj)
+        if query.q in self._to_process_registered:
+            try:
+                self._to_process.put_nowait((query, obj))
+            except Queue.Full:
+                self.debug(0, "Unable to queue msg to be processed, QueueFull")
+            #getattr(self, 'on_%s_response' % query.q)(query, obj)
+
     def _process_query(self, obj):
         if obj.q in ["find_node", "ping", "get_peers", "announce_peer"]:
             getattr(self, '_on_%s_query' % obj.q)(obj)
-            getattr(self, 'on_%s_query' % obj.q)(obj)
+        if obj.q in self._to_process_registered:
+            try:
+                self._to_process.put_nowait((obj, None))
+            except Queue.Full:
+                self.debug(0, "Unable to queue msg to be processed, QueueFull")
+            #getattr(self, 'on_%s_query' % obj.q)(obj)
+
+    def _process_loop(self):
+        """function lauch by the thread processing messages"""
+        while True:
+            if self.stoped:
+                return
+            try:
+                (query, response) = self._to_process.get(timeout=1)
+                if response is None:
+                    getattr(self, 'on_%s_query' % query.q)(query)
+                else:
+                    getattr(self, 'on_%s_response' % query.q)(query, response)
+            except Queue.Empty:
+                pass
 
     def _decode(self, s, addr):
         """decode a message"""
