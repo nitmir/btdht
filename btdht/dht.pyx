@@ -121,6 +121,8 @@ cdef class DHT_BASE:
         self.master = master
         self.stoped = True
         self._threads_zombie = []
+        self._last_debug = ""
+        self._last_debug_time = 0
 
 
     def save(self, filename=None):
@@ -249,12 +251,17 @@ cdef class DHT_BASE:
     def debug(self, lvl, msg):
         """to print `msg` if `lvl` > `debuglvl`
 
+        Note:
+          duplicate messages are removed
+
         Args:
           lvl (int): minimal level for `debuglvl` to print `msg`
           msg (str): message to print
         """
-        if lvl <= self.debuglvl:
+        if lvl <= self.debuglvl and (self._last_debug != msg or (time.time() - self._last_debug_time)>5):
             print(self.prefix + msg)
+            self._last_debug = msg
+            self._last_debug_time = time.time()
 
     def socket_stats(self):
         """Statistic on send/received messages
@@ -1525,6 +1532,8 @@ class RoutingTable(object):
         self.threads = []
         self._to_merge = set()
         self._threads_zombie= []
+        self._last_debug = ""
+        self._last_debug_time = 0
 
     def stop_bg(self):
         """stop the routing table and return immediately"""
@@ -1693,8 +1702,10 @@ class RoutingTable(object):
 
     def debug(self, lvl, msg):
         """same as debug on DHT_BASE"""
-        if lvl <= self.debuglvl:
+        if lvl <= self.debuglvl and (msg != self._last_debug or (time.time() - self._last_debug_time) > 5):
             print("RT:%s" % msg)
+            self._last_debug = msg
+            self._last_debug_time = time.time()
 
     def _routine(self):
         last_explore_tree = 0
