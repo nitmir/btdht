@@ -1578,9 +1578,9 @@ class RoutingTable(object):
         self.stoped = True
         self._threads = [t for t in self._threads[:] if t.is_alive()]
         #self.debug(0, "Trying to terminate thread for 1 minutes")
-        for i in range(0, 60):
+        for i in range(0, 30):
             if self._threads:
-                if i > 3:
+                if i > 5:
                     self.debug(0, "Waiting for %s threads to terminate" % len(self._threads))
                 time.sleep(1)
                 self._threads = [t for t in self._threads[:] if t.is_alive()]
@@ -1914,7 +1914,7 @@ class RoutingTable(object):
         except KeyError:
             self.debug(2, "trie changed while splitting")
         except BucketNotFull as e:
-            self.debug(0, "%r" % e)
+            self.debug(1, "%r" % e)
         if callbacks:
             for callback in callbacks:
                 callback[0](*callback[1])
