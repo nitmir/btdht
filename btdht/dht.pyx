@@ -954,6 +954,9 @@ cdef class DHT_BASE:
 class BucketFull(Exception):
     pass
 
+class BucketNotFull(Exception):
+    pass
+
 class NoTokenError(Exception):
     pass
 
@@ -1272,11 +1275,18 @@ class Bucket(list):
         Returns:
           True if `id` is handle by this bucket
         """
-        if id.startswith(self.id[:self.id_length/8]):
-            for i in range(self.id_length/8*8, self.id_length):
-                if nbit(self.id, i) !=  nbit(id, i):
-                    return False
+        if not self.id:
             return True
+        if id.startswith(self.id[:self.id_length/8]):
+            i=-1
+            try:
+                for i in range(self.id_length/8*8, self.id_length):
+                    if nbit(self.id, i) !=  nbit(id, i):
+                        return False
+                return True
+            except IndexError as e:
+                print("%r i:%s selfid:%s:%s:%r nodeid:%d:%r %r" % (e, i, len(self.id), self.id_length, self.id, len(id), id, self))
+                return False
         else:
             return False
 
@@ -1371,6 +1381,8 @@ class Bucket(list):
         Returns:
           a tuple of two buckets
         """
+        if len(self) < self.max_size:
+            raise BucketNotFull("Bucket not Full %r" % self)
         if self.id_length < 8*len(self.id):
             new_id = self.id
         else:
@@ -1381,8 +1393,11 @@ class Bucket(list):
             try:
                 if b1.own(node.id):
                     b1.add(dht, node)
-                else:
+                elif b2.own(node.id):
                     b2.add(dht, node)
+                else:
+                    print("%r" % self)
+                    raise ValueError("%r %r not in bucket" % (node, node.id))
             except BucketFull:
                 rt.add(dht, node)
         if nbit(b1.id, self.id_length) == 0:
@@ -1407,10 +1422,24 @@ class Bucket(list):
         return time.time() - self.last_changed > 15 * 60
 
 
+    def __hash__(self):
+        return hash(utils.id_to_longid(str(self.id))[:self.id_length])
+
 class DHT(DHT_BASE):
     pass
 class NotFound(Exception):
     pass
+
+class SplitQueue(Queue.Queue):
+    def _init(self, maxsize):
+        self.queue = collections.OrderedDict()
+    def _put(self, item):
+        if not item[0] in self.queue:
+            self.queue[item[0]] = item[1:-1] + (set(),)
+        self.queue[item[0]][-1].add(item[-1])
+    def _get(self):
+        (key, value) = self.queue.popitem(False)
+        return (key, ) + value
 
 class RoutingTable(object):
     """
@@ -1432,7 +1461,7 @@ class RoutingTable(object):
         self.info_hash = set()
         #self.last_merge = 0
         self.lock = Lock()
-        self._to_split = Queue.Queue()
+        self._to_split = SplitQueue()
         self._dhts = set()
         self.stoped = True
         self.need_merge = False
@@ -1646,12 +1675,12 @@ class RoutingTable(object):
             if self.stoped:
                 return
             try:
-                (dht, id, callback) = self._to_split.get(timeout=1)
-                self._split(dht, id, callback)
+                (bucket, dht, callbacks) = self._to_split.get(timeout=1)
+                self._split(dht, bucket, callbacks)
             except Queue.Empty:
                 pass
 
-    def split(self, dht, id, callback=None):
+    def split(self, dht, bucket, callback=None):
         """request for a bucket identified by `id` to be split
 
         Notes:
@@ -1659,12 +1688,11 @@ class RoutingTable(object):
 
         Args:
           dht (DHT_BASE): a dht instance
-          id (str): an 160bits (20 Bytes) id that will be matched to one
-            of the routing table bucket
+          bucket (Bucket): a bucket in the routing table to split
           callback (tuple): first element must be callable and further element
             arguments to pass to the callable.
         """
-        self._to_split.put((dht, id, callback))
+        self._to_split.put((bucket, dht, callback))
 
 
     def empty(self):
@@ -1752,34 +1780,44 @@ class RoutingTable(object):
         try:
             b.add(dht, node)
         except BucketFull:
-            for id in self.split_ids | self.info_hash:
-                if b.own(id):
-                    self.split(dht, node.id, callback=(self.add, (dht, node)))
-                    return
+            # If bucket is full, try to split
+            if b.id_length < 160:
+                for id in self.split_ids | self.info_hash:
+                    if b.own(id):
+                        self.split(dht, b, callback=(self.add, (dht, node)))
+                        return
+            else:
+                print("%r" % b)
 
     def heigth(self):
         """height of the tree of the routing table"""
         return self._heigth
 
-    def _split(self, dht, id, callback=None):
-        #with self.lock:
+    def _split(self, dht, bucket, callbacks=None):
         try:
-            try:
-                prefix = self.trie.longest_prefix(utils.id_to_longid(str(id)))
-            except KeyError:
-                if u"" in self.trie:
-                    prefix = u""
-                else:
-                    return
+            #try:
+            #    prefix = self.trie.longest_prefix(utils.id_to_longid(str(bucket.id)))
+            #except KeyError:
+            #    if u"" in self.trie:
+            #        prefix = u""
+            #    else:
+            #        return
+            #print prefix
+            #print utils.id_to_longid(str(bucket.id))[:bucket.id_length]
+            prefix = utils.id_to_longid(str(bucket.id))[:bucket.id_length]
+            (zero_b, one_b) = self.trie[prefix].split(self, dht)
             (zero_b, one_b) = self.trie[prefix].split(self, dht)
             self.trie[prefix + u"1"] = one_b
             self.trie[prefix + u"0"] = zero_b
             self._heigth = max(self._heigth, len(prefix) + 2)
             del self.trie[prefix]
         except KeyError:
-            self.debug(0, "trie changed while splitting")
-        if callback:
-            callback[0](*callback[1])
+            self.debug(2, "trie changed while splitting")
+        except BucketNotFull as e:
+            self.debug(0, "%r" % e)
+        if callbacks:
+            for callback in callbacks:
+                callback[0](*callback[1])
 
 
     def merge(self):
