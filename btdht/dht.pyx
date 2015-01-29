@@ -523,6 +523,7 @@ cdef class DHT_BASE:
            except KeyError:
                if errno > 20:
                    raise
+               time.sleep(0.1)
                return self._get_peers(info_hash, compact, errno=errno+1)
 
     def get_closest_nodes(self, id, compact=False):
@@ -606,6 +607,9 @@ cdef class DHT_BASE:
                             self.socket_out+=1
                             break
                     except socket.error as e:
+                        if e.errno == 40: # Message too long
+                            self.debug(0, "send:%r %r %r" % (e, addr, msg))
+                            break
                         if e.errno not in [11, 1]: # 11: Resource temporarily unavailable
                             self.debug(0, "send:%r %r" % (e, addr) )
                             raise
@@ -638,7 +642,7 @@ cdef class DHT_BASE:
                     if addr[0] in self.ignored_ip:
                         continue
                     if addr[1] < 1 or addr[1] > 65535:
-                        self.debug(0, "Port should be whithin 1 and 65535, not %s" % addr[1])
+                        self.debug(1, "Port should be whithin 1 and 65535, not %s" % addr[1])
                         continue
                     if len(data) < 20:
                         continue
@@ -748,21 +752,30 @@ cdef class DHT_BASE:
                 if not self.token[ip]:
                     del self.token[ip]
             for id in self.mytoken.keys():
-                if now - self.mytoken[id][1] > 600:
-                    del self.mytoken[id]
+                try:
+                    if now - self.mytoken[id][1] > 600:
+                        del self.mytoken[id]
+                except KeyError:
+                    pass
 
             # cleaning old peer for announce_peer
             for hash, peers in self._peers.items():
                 for peer in peers.keys():
-                    if now - self._peers[hash][peer] > 30 * 60:
-                        del self._peers[hash][peer]
+                    try:
+                        if now - self._peers[hash][peer] > 30 * 60:
+                            del self._peers[hash][peer]
+                    except KeyError:
+                        pass
                 if not self._peers[hash]:
                     del self._peers[hash]
 
             for hash, peers in self._got_peers.items():
                 for peer in peers.keys():
-                    if now - self._got_peers[hash][peer] > 15 * 60:
-                        del self._got_peers[hash][peer]
+                    try:
+                        if now - self._got_peers[hash][peer] > 15 * 60:
+                            del self._got_peers[hash][peer]
+                    except KeyError:
+                        pass
                 if not self._got_peers[hash]:
                     del self._got_peers[hash]
 
