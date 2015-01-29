@@ -50,6 +50,8 @@ cdef class DHT_BASE:
       debuglvl (int): Level of verbosity
       master (bool): A boolean value to disting a particular dht instance
       threads (list of Thread): list of the threads of the dht instance
+      zombie (bool): True if dht is stopped but one thread or more remains
+        alive
     """
     cdef char _myid[20]
 
@@ -113,7 +115,6 @@ cdef class DHT_BASE:
 
         self.master = master
         self.stoped = True
-        self.zombie = False
         self._threads_zombie = []
 
 
@@ -169,17 +170,16 @@ cdef class DHT_BASE:
         self.root.release_dht(self)
         self._threads = [t for t in self._threads[:] if t.is_alive()]
         #self.debug(0, "Trying to terminate thread for 1 minutes")
-        for i in range(0, 60):
+        for i in range(0, 30):
             if self._threads:
-                if i > 3:
+                if i > 5:
                     self.debug(0, "Waiting for %s threads to terminate" % len(self._threads))
                 time.sleep(1)
                 self._threads = [t for t in self._threads[:] if t.is_alive()]
             else:
                 break
         if self._threads:
-            self.debug(0, "Unable to stop %s threads, giving up" % len(self._threads))
-            self.zombie = True
+            self.debug(0, "Unable to stop %s threads, giving up:\n%r" % (len(self._threads), self._threads))
             self._threads_zombie.extend(self._threads)
             self._threads = []
         
@@ -187,6 +187,10 @@ cdef class DHT_BASE:
             try:self.sock.close()
             except: pass
         
+    @property
+    def zombie(self):
+        return self.stoped and [t for t in self._threads if t.is_alive()]
+
     def start(self):
         """Start the threads of the dht"""
         if not self.stoped:
@@ -1446,6 +1450,8 @@ class RoutingTable(object):
     Attributs:
       trie (datrie.Trie): the routing table storage data structure
       threads (list of Thread): threads of the routing table
+      zombie (bool): True if dht is stopped but one thread or more remains
+        alive
     """
     #__slot__ = ("trie", "_heigth", "split_ids", "info_hash", "last_merge", "lock", "_dhts", "stoped")
     def __init__(self, debuglvl=0):
@@ -1469,7 +1475,6 @@ class RoutingTable(object):
         self.threads = []
         self._to_merge = set()
         self._threads_zombie= []
-        self.zombie = False
 
     def stop_bg(self):
         """stop the routing table and return immediately"""
@@ -1493,10 +1498,14 @@ class RoutingTable(object):
             else:
                 break
         if self._threads:
-            self.debug(0, "Unable to stop %s threads, giving up" % len(self._threads))
+            self.debug(0, "Unable to stop %s threads, giving up:\n%r" % (len(self._threads), self._threads))
             self.zombie = True
             self._threads_zombie.extend(self._threads) 
             self._threads = []
+
+    @property
+    def zombie(self):
+        return self.stoped and [t for t in self._threads if t.is_alive()]
         
     def start(self):
         """start the routing table"""
