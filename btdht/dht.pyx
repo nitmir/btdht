@@ -607,7 +607,7 @@ cdef class DHT_BASE:
                             self.socket_out+=1
                             break
                     except socket.error as e:
-                        if e.errno == 40: # Message too long
+                        if e.errno == 90: # Message too long
                             self.debug(0, "send:%r %r %r" % (e, addr, msg))
                             break
                         if e.errno not in [11, 1]: # 11: Resource temporarily unavailable
