@@ -931,16 +931,19 @@ cdef class DHT_BASE:
     def _on_get_peers_query(self, query):
         pass
     def _on_announce_peer_query(self, query):
-        if query.get("implied_port", 0) != 0:
-            if query.addr[1] > 0 and query.addr[1] < 65536:
-                self._add_peer(info_hash=query["info_hash"], ip=query.addr[0], port=query.addr[1])
+        try:
+            if query.get("implied_port", 0) != 0:
+                if query.addr[1] > 0 and query.addr[1] < 65536:
+                    self._add_peer(info_hash=query["info_hash"], ip=query.addr[0], port=query.addr[1])
+                else:
+                    self.debug(1, "Invalid port number on announce %s, sould be within 1 and 65535" % query.addr[1])
             else:
-                self.debug(1, "Invalid port number on announce %s, sould be within 1 and 65535" % query.addr[1])
-        else:
-            if query["port"] > 0 and query["port"] < 65536:
-                self._add_peer(info_hash=query["info_hash"], ip=query.addr[0], port=query["port"])
-            else:
-                self.debug(1, "Invalid port number on announce %s, sould be within 1 and 65535" % query["port"])
+                if query["port"] > 0 and query["port"] < 65536:
+                    self._add_peer(info_hash=query["info_hash"], ip=query.addr[0], port=query["port"])
+                else:
+                    self.debug(1, "Invalid port number on announce %s, sould be within 1 and 65535" % query["port"])
+        except KeyError as e:
+            raise ProtocolError(query.t, "Message malformed: %s key is missing" % e.message)    
 
 
     def _process_response(self, obj, query):
