@@ -196,7 +196,7 @@ cdef class DHT_BASE:
         
     @property
     def zombie(self):
-        return self.stoped and [t for t in self._threads if t.is_alive()]
+        return bool(self.stoped and [t for t in self._threads if t.is_alive()])
 
     def start(self):
         """Start the threads of the dht"""
