@@ -1020,7 +1020,7 @@ cdef class DHT_BASE:
                     self.debug(3, "ERROR:%s:%s pour %r" % (msg.errno, msg.errmsg, self.transaction_type.get(msg.t, {})))
                     raise MethodUnknownError(msg.t, "Error code %s unknown" % msg.errno)
             else:
-                self.debug(0, "UNKNOWN MSG: %r" % msg)
+                self.debug(0, "UNKNOWN MSG: %s" % msg)
                 raise ProtocolError(msg.t)
         except KeyError as e:
             raise ProtocolError(msg.t, "Message malformed: %s key is missing" % e.message)
