@@ -125,13 +125,16 @@ cdef class DHT_BASE:
         self._last_debug_time = 0
 
 
-    def save(self, filename=None):
+    def save(self, filename=None, max_node=None):
         """save the current list of nodes to `filename`. 
 
         Args:
           filename (str, optional): filename where the list of known node is saved.
             default to dht_`id`.status
+          max_node (int, optional): maximun number of nodes to save. default is all
+            the routing table
         """
+        nodes_nb = 0
         if filename is None:
             myid = str(self.myid).encode("hex")
             filename = "dht_%s.status" % myid
@@ -140,14 +143,21 @@ cdef class DHT_BASE:
                 for node in bucket:
                     if node.good:
                         f.write(node.compact_info())
+                        if max_node is not None:
+                            nodes_nb+=1
+                            if nodes_nb >= max_node:
+                                return
 
-    def load(self, filename=None):
+    def load(self, filename=None, max_node=None):
         """load a list of nodes from `filename`.
 
         Args:
           filename (str, optional): filename where the list of known node is load from.
             default to dht_`id`.status
+          max_node (int, optional): maximun number of nodes to save. default is all
+            nodes in the file
         """
+        nodes_nb = 0
         if filename is None:
             myid = str(self.myid).encode("hex")
             filename = "dht_%s.status" % myid
@@ -157,6 +167,10 @@ cdef class DHT_BASE:
                 while nodes:
                     for node in Node.from_compact_infos(nodes):
                         self.root.add(self, node)
+                        if max_node is not None:
+                            nodes_nb+=1
+                            if nodes_nb >= max_node:
+                                return
                     nodes = f.read(26*100)
         except IOError as e:
             self.debug(0, str(e))
