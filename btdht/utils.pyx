@@ -121,14 +121,23 @@ def enumerate_ids(size, id):
 
 @total_ordering
 class ID(object):
-    def __generate(self):
+
+    @classmethod
+    def to_bytes(cls, id):
+        try:
+            return id.value
+        except AttributeError:
+            return id
+
+    @staticmethod
+    def __generate():
         return os.urandom(20)
 
     def __init__(self, id=None):
         if id is None:
             self.value = self.__generate()
         else:
-            self.value = str(id)
+            self.value = self.to_bytes(id)
 
     def encode(self, c):
         return self.value.encode(c)

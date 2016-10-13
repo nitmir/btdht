@@ -84,9 +84,9 @@ cdef class DHT_BASE:
         if id is not None:
             if len(id) != 20:
                 raise ValueError("id must be 20 char long")
-            id = str(id)
+            id = ID.to_bytes(id)
         else:
-            id = str(ID())
+            id = ID().value
         self.myid = ID(id)
 
         # initialising the routing table
@@ -136,7 +136,7 @@ cdef class DHT_BASE:
         """
         nodes_nb = 0
         if filename is None:
-            myid = str(self.myid).encode("hex")
+            myid = self.myid.value.encode("hex")
             filename = "dht_%s.status" % myid
         with open(filename, 'wb') as f:
             for bucket in self.root.trie.values():
@@ -159,7 +159,7 @@ cdef class DHT_BASE:
         """
         nodes_nb = 0
         if filename is None:
-            myid = str(self.myid).encode("hex")
+            myid = self.myid.value.encode("hex")
             filename = "dht_%s.status" % myid
         try:
             with open(filename, 'rb') as f:
@@ -297,7 +297,7 @@ cdef class DHT_BASE:
 
     def init_socket(self):
         """Initialize the UDP socket of the DHT"""
-        self.debug(0, "init socket for %s" % str(self.myid).encode("hex"))
+        self.debug(0, "init socket for %s" % self.myid.value.encode("hex"))
         if self.sock:
              try:self.sock.close()
              except: pass
@@ -576,8 +576,8 @@ cdef class DHT_BASE:
             msg.q = "find_node"
             self._set_transaction_id(msg)
             msg.set_a(True)
-            msg["id"] = str(self.myid)
-            msg["target"] = str(self.myid)
+            msg["id"] = self.myid.value
+            msg["target"] = self.myid.value
             self.sendto(str(msg), addr)
 
 
@@ -1098,7 +1098,7 @@ cdef class Node:
             raise ValueError("IP start with 0 *_* %r %r" % (ip, self._ip[:4]))
         tip = socket.inet_aton(ip)
         cip = tip
-        id = str(id)
+        id = ID.to_bytes(id)
         cid = id
         with nogil:
             if not port > 0 and port < 65536:
@@ -1183,7 +1183,7 @@ cdef class Node:
         return "Node: %s:%s" % (self.ip, self.port)
 
     def compact_info(self):
-        return struct.pack("!20s4sH", str(self.id), self._ip, self.port)
+        return struct.pack("!20s4sH", self.id, self._ip, self.port)
 
     @classmethod
     def from_compact_infos(cls, infos, v=""):
@@ -1282,8 +1282,8 @@ cdef class Node:
           dht (DHT_BASE): a dht instance
           target (str): the 160bits (20 bytes) target node id
         """
-        id = str(dht.myid)
-        target = str(target)
+        id = dht.myid.value
+        target = ID.to_bytes(target)
         tl = len(target)
         msg = BMessage()
         dht._set_transaction_id(msg)
@@ -1302,8 +1302,8 @@ cdef class Node:
           dht (DHT_BASE): a dht instance
           info_hash (str): a 160bits (20 bytes) to get downloading peers
         """
-        id = str(dht.myid)
-        info_hash = str(info_hash)
+        id = dht.myid.value
+        info_hash = ID.to_bytes(info_hash)
         ihl = len(info_hash)
         msg = BMessage()
         dht._set_transaction_id(msg)
@@ -1327,8 +1327,8 @@ cdef class Node:
         cdef char* tk
         cdef char* ih
         if self.id in dht.mytoken and (time.time() - dht.mytoken[self.id][1]) < 600:
-            id = str(dht.myid)
-            info_hash = str(info_hash)
+            id = dht.myid.value
+            info_hash = ID.to_bytes(info_hash)
             token = dht.mytoken[self.id][0]
             msg = BMessage()
             dht._set_transaction_id(msg)
@@ -1515,7 +1515,7 @@ class Bucket(list):
 
 
     def __hash__(self):
-        return hash(utils.id_to_longid(str(self.id))[:self.id_length])
+        return hash(utils.id_to_longid(ID.to_bytes(self.id))[:self.id_length])
 
     def __eq__(self, other):
         try:
@@ -1660,7 +1660,7 @@ class RoutingTable(object):
             self.info_hash.remove(id)
             if not id in self.split_ids:
                 try:
-                    key = self.trie.longest_prefix(utils.id_to_longid(str(id)))
+                    key = self.trie.longest_prefix(utils.id_to_longid(ID.to_bytes(id)))
                     #self._to_merge.add(key)
                 except KeyError:
                     pass
@@ -1848,7 +1848,7 @@ class RoutingTable(object):
     def find(self, id, errno=0):
         """retourn the bucket containing `id`"""
         try:
-            return self.trie.longest_prefix_value(utils.id_to_longid(str(id)))
+            return self.trie.longest_prefix_value(utils.id_to_longid(ID.to_bytes(id)))
         except KeyError as e:
             if errno > 0:
                 print("%r:%r" % (id,e))
@@ -1866,7 +1866,7 @@ class RoutingTable(object):
             id = ID(id)
             nodes = set(n for n in self.find(id) if not n.bad)
             try:
-                prefix = self.trie.longest_prefix(utils.id_to_longid(str(id)))
+                prefix = self.trie.longest_prefix(utils.id_to_longid(id.value))
             except KeyError:
                 prefix = u""
             while len(nodes) < Bucket.max_size and prefix:
