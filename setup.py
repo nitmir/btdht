@@ -1,39 +1,34 @@
 #! /usr/bin/env python
 import os
-from distutils.core import setup
-from distutils.extension import Extension
+from setuptools import setup
+from setuptools import Extension
 import distutils.command.clean
-from Cython.Distutils import build_ext
+try:
+    from Cython.Build import cythonize
+    has_cython = True
+except ImportError:
+    has_cython = False
 
-
-class clean(distutils.command.clean.clean):
-    def run(self):
-        distutils.command.clean.clean.run(self)
-        files = ["btdht/dht.c", "btdht/krcp.c", "btdht/utils.c"]
-        for file in files:
-            if os.path.exists(file):
-                os.remove(file)
-extensions = [
-    Extension("btdht.dht", ["btdht/dht.pyx"],
-        include_dirs = ["btdht/"],
-    ),
-    Extension("btdht.krcp", ["btdht/krcp.pyx"],
-        include_dirs = ["btdht/"],
-    ),
-    Extension("btdht.utils", ["btdht/utils.pyx"],
-        include_dirs = ["btdht/"],
-    ),
+c_extensions = [
+    Extension("btdht.dht", ["btdht/dht.c"]),
+    Extension("btdht.krcp", ["btdht/krcp.c"]),
+    Extension("btdht.utils", ["btdht/utils.c"]),
 ]
+
+with open(os.path.join(os.path.dirname(__file__), 'README.rst')) as readme:
+    README = readme.read()
 
 setup(
     name="btdht",
-    version="0.1",
-    description="efficency full implementation of the bittorent mainline dht",
-    url='https://github.com/nitmir/btdht/',
+    version="0.1.0",
     packages = ['btdht'],
-    cmdclass={'clean':clean, 'build_ext': build_ext},
-    ext_modules = extensions,
-
+    ext_modules = cythonize("btdht/*.pyx") if has_cython else c_extensions,
+    include_package_data=True,
+    license='GPLv3',
+    description="efficent full implementation of the bittorent mainline dht",
+    long_description=README,
+    author='Valentin Samir',
+    author_email='valentin.samir@crans.org',
     classifiers=[
         'Development Status :: 4 - Beta',
         'Intended Audience :: Developers',
@@ -42,12 +37,13 @@ setup(
         'Programming Language :: Cython',
         'Programming Language :: Python',
         'Programming Language :: Python :: 2',
-        'Programming Language :: Python :: 2.6',
         'Programming Language :: Python :: 2.7',
-        'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.2',
-        'Programming Language :: Python :: 3.3',
         'Programming Language :: Python :: Implementation :: CPython',
         'Topic :: Software Development :: Libraries :: Python Modules',
+        'Topic :: Communications :: File Sharing'
     ],
+    install_requires=["datrie >= 0.7"],
+    url='https://github.com/nitmir/btdht/',
+    download_url="https://github.com/nitmir/btdht/releases/latest",
+    zip_safe=False,
 )
