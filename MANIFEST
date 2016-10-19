@@ -8,4 +8,8 @@ btdht/krcp.pxd
 btdht/utils.pyx
 btdht/dht.pyx
 btdht/krcp.pyx
-
+Makefile
+LICENSE
+README.rst
+requirements-dev.txt
+requirements.txt
