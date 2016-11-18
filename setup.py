@@ -42,7 +42,7 @@ setup(
         'Topic :: Software Development :: Libraries :: Python Modules',
         'Topic :: Communications :: File Sharing'
     ],
-    install_requires=["datrie >= 0.7"],
+    install_requires=["datrie >= 0.7", "netaddr >= 0.7.12"],
     url='https://github.com/nitmir/btdht/',
     download_url="https://github.com/nitmir/btdht/releases/latest",
     zip_safe=False,

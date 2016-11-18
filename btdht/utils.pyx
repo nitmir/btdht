@@ -12,6 +12,7 @@
 
 import os
 import sys
+import netaddr
 from functools import total_ordering
 
 from libc.stdlib cimport atoi, malloc, free
@@ -392,3 +393,16 @@ def _bdecode2(s, ii=None):
     else:
         raise BcodeError("Not bencoded string %s" % s)
 
+
+def ip_in_nets(ip, nets):
+    """
+        :param str ip: An ip, in dotted notation
+        :param list nets: A list of :obj:`netaddr.IPNetwork`
+        :return: ``True`` if ip is in one of the listed networks, ``False`` otherwise
+        :rtype: bool
+    """
+    ip = netaddr.IPAddress(ip)
+    for net in nets:
+        if ip in net:
+            return True
+    return False

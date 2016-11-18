@@ -27,6 +27,7 @@ import struct
 import socket
 import select
 import collections
+import netaddr
 from functools import total_ordering, reduce
 from threading import Thread, Lock
 from random import shuffle
@@ -56,7 +57,9 @@ cdef class DHT_BASE:
     cdef char _myid[20]
 
     def __init__(self, routing_table=None, bind_port=None, bind_ip="0.0.0.0",
-      id=None, ignored_ip=[], debuglvl=0, prefix="", master=False, process_queue_size=500):
+      id=None, ignored_ip=[], debuglvl=0, prefix="", master=False, process_queue_size=500,
+      ignored_net=None
+    ):
         """
         Note:
            try to use same `id` and `bind_port` over dht restart to increase
@@ -78,6 +81,8 @@ cdef class DHT_BASE:
           process_queue_size(int, optional): Size of the queue of messages waiting
             to be processed by user function (on_`msg`_(query|response)). see
             the `register_message` method. default to 500.
+          ignored_net (list of str, optional): a list of ip network in CIDR notation
+            to ignore. By default, the list contains all private ip networks.
         """
 
         # checking the provided id or picking a random one
@@ -111,7 +116,15 @@ cdef class DHT_BASE:
 
         self.sock = None
 
+        if ignored_net is None:
+            ignored_net = [
+                '10.0.0.0/8', '172.16.0.0/12','198.18.0.0/15',
+                '169.254.0.0/16', '192.168.0.0/16', '224.0.0.0/4', '100.64.0.0/10',
+                '0.0.0.0/8','127.0.0.0/8','192.0.2.0/24','198.51.100.0/24','203.0.113.0/24',
+                '192.0.0.0/29', '240.0.0.0/4', '255.255.255.255/32',
+            ]
         self.ignored_ip = ignored_ip
+        self.ignored_net = [netaddr.IPNetwork(net) for net in ignored_net]
         self.debuglvl = debuglvl
         self.prefix = prefix
 
@@ -372,17 +385,19 @@ cdef class DHT_BASE:
 
     def _add_peer(self, info_hash, ip, port):
         """Store a peer after a  announce_peer query"""
-        self._peers[info_hash][(ip,port)]=time.time()
-        # we only keep at most 100 peers per hash
-        if len(self._peers[info_hash]) > 100:
-            self._peers[info_hash].popitem(False)
+        if ip not in self.ignored_ip and not utils.ip_in_nets(ip, self.ignored_net):
+            self._peers[info_hash][(ip,port)]=time.time()
+            # we only keep at most 100 peers per hash
+            if len(self._peers[info_hash]) > 100:
+                self._peers[info_hash].popitem(False)
 
     def _add_peer_queried(self, info_hash, ip, port):
         """Store a peer after a  announce_peer query"""
-        self._got_peers[info_hash][(ip,port)]=time.time()
-        # we only keep at most 1000 peers per hash
-        if len(self._got_peers[info_hash]) > 1000:
-            self._got_peers[info_hash].popitem(False)
+        if ip not in self.ignored_ip and not utils.ip_in_nets(ip, self.ignored_net):
+            self._got_peers[info_hash][(ip,port)]=time.time()
+            # we only keep at most 1000 peers per hash
+            if len(self._got_peers[info_hash]) > 1000:
+                self._got_peers[info_hash].popitem(False)
 
     def get_peers(self, hash, delay=0, block=True, callback=None, limit=10):
         """Return a list of at most 1000 (ip, port) downloading `hash` or pass-it to `callback`
@@ -654,6 +669,8 @@ cdef class DHT_BASE:
                 try:
                     data, addr = self.sock.recvfrom(4048)
                     if addr[0] in self.ignored_ip:
+                        continue
+                    if utils.ip_in_nets(addr[0], self.ignored_net):
                         continue
                     if addr[1] < 1 or addr[1] > 65535:
                         self.debug(1, "Port should be whithin 1 and 65535, not %s" % addr[1])
@@ -1894,6 +1911,8 @@ class RoutingTable(object):
           node (Node): a node instance to be added
         """
         if node.ip in dht.ignored_ip:
+            return
+        if utils.ip_in_nets(node.ip, dht.ignored_net):
             return
         b = self.find(node.id)
         try:
