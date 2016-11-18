@@ -20,7 +20,7 @@ with open(os.path.join(os.path.dirname(__file__), 'README.rst')) as readme:
 
 setup(
     name="btdht",
-    version="0.1.1",
+    version="0.2.0",
     packages = ['btdht'],
     ext_modules = cythonize("btdht/*.pyx") if has_cython else c_extensions,
     include_package_data=True,
