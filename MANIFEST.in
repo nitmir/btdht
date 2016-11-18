@@ -1,0 +1,7 @@
+recursive-include btdht *
+include setup.cfg
+include Makefile
+include LICENSE
+include README.rst
+include requirements-dev.txt
+include requirements.txt

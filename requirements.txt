@@ -1,1 +1,2 @@
 datrie >= 0.7
+netaddr >= 0.7.12

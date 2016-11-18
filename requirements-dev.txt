@@ -1,3 +1,4 @@
 datrie >= 0.7
+netaddr >= 0.7.12
 Cython >= 0.21
 wheel
