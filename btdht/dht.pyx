@@ -1893,6 +1893,8 @@ class RoutingTable(object):
           dht (DHT_BASE): a dht instance
           node (Node): a node instance to be added
         """
+        if node.ip in dht.ignored_ip:
+            return
         b = self.find(node.id)
         try:
             b.add(dht, node)
