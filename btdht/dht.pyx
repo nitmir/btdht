@@ -395,7 +395,11 @@ cdef class DHT_BASE:
 
     def _add_peer_queried(self, info_hash, ip, port):
         """Store a peer after a  announce_peer query"""
-        if ip not in self.ignored_ip and not utils.ip_in_nets(ip, self.ignored_net):
+        if (
+            port > 0 and
+            ip not in self.ignored_ip and
+            not utils.ip_in_nets(ip, self.ignored_net)
+        ):
             self._got_peers[info_hash][(ip,port)]=time.time()
             # we only keep at most 1000 peers per hash
             if len(self._got_peers[info_hash]) > 1000:
