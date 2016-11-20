@@ -9,7 +9,7 @@ dist:
 
 install: dist
 	pip -V
-	pip install --no-deps --upgrade --force-reinstall --find-links ./dist/btdht-${VERSION}.tar.gz btdht
+	pip install --no-cache-dir --no-deps --upgrade --force-reinstall --find-links ./dist/btdht-${VERSION}.tar.gz btdht
 
 uninstall:
 	pip uninstall btdht || true
