@@ -141,7 +141,7 @@ cdef class DHT_BASE:
 
 
     def save(self, filename=None, max_node=None):
-        """save the current list of nodes to `filename`. 
+        """save the current list of nodes to `filename`.
 
         Args:
           filename (str, optional): filename where the list of known node is saved.
@@ -218,11 +218,11 @@ cdef class DHT_BASE:
             self.debug(0, "Unable to stop %s threads, giving up:\n%r" % (len(self._threads), self._threads))
             self._threads_zombie.extend(self._threads)
             self._threads = []
-        
+
         if self.sock:
             try:self.sock.close()
             except: pass
-        
+
     @property
     def zombie(self):
         return bool(self.stoped and [t for t in self._threads if t.is_alive()])
@@ -275,7 +275,7 @@ cdef class DHT_BASE:
             self.debug(0, "One thread died, stopping dht")
             self.stop_bg()
             return False
-        
+
 
     def debug(self, lvl, msg):
         """to print `msg` if `lvl` > `debuglvl`
@@ -482,7 +482,7 @@ cdef class DHT_BASE:
                     # get hash k closest node that have not been tried
                     _closest = self.get_closest_nodes(hash)
                     __closest = [node for node in _closest if node not in tried_nodes]
-                    
+
                     if __closest:
                         # alpha = 3 from the kademlia paper
                         nodes = __closest[0:3]
@@ -583,7 +583,7 @@ cdef class DHT_BASE:
             return b"".join(n.compact_info() for n in l)
         else:
             return list(self.root.get_closest_nodes(id))
-    
+
     def bootstarp(self):
         """boostrap the DHT to some wellknown nodes"""
         self.debug(0,"Bootstraping")
@@ -724,7 +724,7 @@ cdef class DHT_BASE:
                         self.debug(0, "send:%r : (%r, %r)" % (e, data, addr))
                         raise
 
-                
+
     cdef void _set_transaction_id(self, BMessage query, int id_len=6):
         """Set the transaction id (key t of the dictionnary) on a query"""
         id = os.urandom(id_len)
@@ -993,7 +993,7 @@ cdef class DHT_BASE:
                 else:
                     self.debug(1, "Invalid port number on announce %s, sould be within 1 and 65535" % query["port"])
         except KeyError as e:
-            raise ProtocolError(query.t, b"Message malformed: %s key is missing" % e.message)    
+            raise ProtocolError(query.t, b"Message malformed: %s key is missing" % e.message)
 
 
     def _process_response(self, obj, query):
@@ -1151,7 +1151,7 @@ cdef class Node:
 
 
     def __richcmp__(self, Node other, int op):
-            if op == 2: # == 
+            if op == 2: # ==
                 return other.id == self.id
             elif op == 3: # !=
                 return other.id != self.id
@@ -1642,13 +1642,13 @@ class RoutingTable(object):
         if self._threads:
             self.debug(0, "Unable to stop %s threads, giving up:\n%r" % (len(self._threads), self._threads))
             self.zombie = True
-            self._threads_zombie.extend(self._threads) 
+            self._threads_zombie.extend(self._threads)
             self._threads = []
 
     @property
     def zombie(self):
         return self.stoped and [t for t in self._threads if t.is_alive()]
-        
+
     def start(self):
         """start the routing table"""
         with self.lock:
@@ -1760,7 +1760,7 @@ class RoutingTable(object):
         """
         try: self._dhts.remove(dht)
         except KeyError:pass
-        try: 
+        try:
             self.split_ids.remove(dht.myid)
             if not self.need_merge:
                 self.debug(1, "Programming merge")
@@ -1814,7 +1814,7 @@ class RoutingTable(object):
                     del nodes
                 # If questionnable nodes, ping one of them
                 questionable = [node for node in bucket if not node.good and not node.bad]
-                
+
                 for dht in dhts:
                     if not questionable:
                         break
@@ -1870,7 +1870,7 @@ class RoutingTable(object):
                     else:
                         others+=1
         except (TypeError, AttributeError):
-            pass 
+            pass
         return (nodes, goods, bads)
 
     def __iter__(self):
@@ -1991,7 +1991,7 @@ class RoutingTable(object):
             nodes_before = self.stats()[0]
             if nodes_before < 1000:
                 self.debug(1, "Less than 1000 nodes, no merge")
-                return 
+                return
             started = time.time()
         while stack:
             if self.stoped:
@@ -2028,6 +2028,6 @@ class RoutingTable(object):
         if full_merge:
             self._heigth = max(len(k) for k in self.trie.keys()) + 1
             self.debug(1, "%s nodes merged in %ss" % (nodes_before - self.stats()[0], int(time.time() - started)))
-                
+
 
 

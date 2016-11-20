@@ -69,7 +69,7 @@ cdef char* _longid_to_id(char* longid, int size=160) nogil except NULL:
 cdef char* _id_to_longid(char* id, int size=20) nogil:
     global BYTE_TO_BIT
     cdef char* ret = <char*>malloc((size * 8) * sizeof(char))
-    cdef int i = 0   
+    cdef int i = 0
     while i < size:
         strncpy(ret + (i*8), BYTE_TO_BIT[<unsigned char>id[i]], 8)
         i+=1
@@ -112,7 +112,7 @@ def nset(s, n , i):
         return s[:n//8]  + chr(ord(s[n//8]) & bit0[n % 8]) + s[n//8+1:]
     else:
         raise ValueError("i doit être 0 ou 1")
-    
+
 class BcodeError(Exception):
     pass
 
@@ -163,7 +163,7 @@ class ID(object):
     def __repr__(self):
         return binascii.b2a_hex(self.value).decode()
 
-    def __eq__(self, other):    
+    def __eq__(self, other):
         if isinstance(other, ID):
             return self.value == other.value
         elif isinstance(other, str):
@@ -178,7 +178,7 @@ class ID(object):
             return self.value < other
         else:
             raise TypeError("unsupported operand type(s) for <: 'ID' and '%s'" % type(other).__name__)
-            
+
     def __len__(self):
         return len(self.value)
 
@@ -209,7 +209,7 @@ def bencode(obj):
         print("%r" % obj)
         raise
 def _bencode(obj):
-    
+
     if isinstance(obj, int) or isinstance(obj, float):
         return b"i" + str(obj).encode() +  b"e"
     elif isinstance(obj, bytes):
@@ -337,7 +337,7 @@ def _bdecode(s):
     return _decode(s, len(s))
 #cdef _bdecode2(char* s, int* ii):
 #    if ii[0] > 2000 and (ii[0] % 100) == 0:
-        
+
 def _bdecode2(s, ii=None):
     if ii is None:
         ii = [0]

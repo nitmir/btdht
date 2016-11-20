@@ -114,7 +114,7 @@ cdef int _decode_pass_dict(char* data, int *i, int max) nogil except -1:
         return False
     i[0]+=1
     return True
-    
+
 cdef int _decode_string(char* data, int* i, int max, int* j) nogil except -1:
     cdef int ret
     if data[i[0]] == b'0' \
@@ -168,7 +168,7 @@ cdef int _decode_int(char* data, int *i, int max, long long  *myint) nogil excep
                 raise ValueError("%s != e at %s %r" % (data[j], j, data[:max]))
     else:
         return False
-                
+
 cdef int _encode_int(char* data, int *i, int max, int j) nogil:
     cdef int l
     l = int_length(j)
@@ -592,7 +592,7 @@ cdef class BMessage:
         data[i[0]]=b'e'
         i[0]+=1
         return True
-        
+
     cdef int _encode_secondary_dict(self, char* data, int* i, int max) nogil:
         if i[0] + 1 > max:
             printf("encode_secondary:%d\n", 0)
@@ -807,13 +807,13 @@ cdef class BMessage:
                 estimated_len+= 8 * self.values_nb + 2 + 8 # l + nb * IPPORT + e
         #printf("estimated_len: %d\n" , estimated_len)
         return estimated_len
-        
+
     def encode(self):
         if self.encoded_uptodate:
                 return self.encoded[:self.encoded_len]
         else:
             with nogil:
-                self._encode()        
+                self._encode()
         if self.encoded_uptodate:
                 return self.encoded[:self.encoded_len]
         else:
@@ -1068,7 +1068,7 @@ cdef class BMessage:
             return False
         i[0]+=1
         return True
-        
+
     cdef int _decode_dict_elm(self, char* data, int* i, int max) nogil except -1:
         cdef char* error
         cdef int j[1]
@@ -1077,7 +1077,7 @@ cdef class BMessage:
         if not _decode_string(data, i, max, j):
             with gil:
                 raise ValueError("Fail to decode dict key %d %s" % (i[0], data[:max]))
-        
+
         if (i[0]-j[0]) == 1 and strncmp(data + j[0], b"a", i[0]-j[0]) == 0:
             return self._decode_dict(data, i, max) and self.set_a(True)
         elif (i[0]-j[0]) == 1 and strncmp(data + j[0], b"r", i[0]-j[0]) == 0:
@@ -1160,7 +1160,7 @@ cdef class BMessage:
         self.set_values(values, c)
         i[0]+=1
         return True
-            
+
     cdef int _decode_dict(self, char* data, int *i, int max) nogil except -1:
         cdef int k
         if data[i[0]] == b'd':
@@ -1176,7 +1176,7 @@ cdef class BMessage:
         else:
             i[0]+=1
             return True
-                
+
     cdef int _decode(self, char* data, int *i, int max) nogil except -1:
         return self._decode_dict(data, i, max)
 
@@ -1203,7 +1203,7 @@ cdef class BMessage:
             self.has_nodes = False
             self.has_values = False
             self.encoded_uptodate = False
-            
+
     def decode(self, char* data, int datalen):
         cdef int i = 0
         cdef int valid = False

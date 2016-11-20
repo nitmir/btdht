@@ -79,7 +79,7 @@ cdef class BMessage:
     cdef void del_encoded(self) nogil
 
     cdef int _encode_values(self, char* data, int* i, int max) nogil
-        
+
     cdef int _encode_secondary_dict(self, char* data, int* i, int max) nogil
 
     cdef int _encode_error(self, char* data, int* i, int max) nogil
@@ -89,13 +89,13 @@ cdef class BMessage:
     cdef int _encode(self) nogil
 
     cdef int _encode_len(self) nogil
-        
+
     cdef int _decode_error(self, char* data, int* i, int max) nogil except -1
-        
+
     cdef int _decode_dict_elm(self, char* data, int* i, int max) nogil except -1
 
     cdef int _decode_values(self, char* data, int *i, int max) nogil except -1
-            
+
     cdef int _decode_dict(self, char* data, int *i, int max) nogil except -1
 
     cdef int _decode(self, char* data, int *i, int max) nogil except -1
