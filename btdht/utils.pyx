@@ -13,6 +13,8 @@
 import os
 import sys
 import netaddr
+import binascii
+import six
 from functools import total_ordering
 
 from libc.stdlib cimport atoi, malloc, free
@@ -54,13 +56,13 @@ cdef char _longid_to_char(char* id) nogil:
 cdef char* _longid_to_id(char* longid, int size=160) nogil except NULL:
     cdef int i
     cdef char* id
-    if size/8*8 != size:
+    if size//8*8 != size:
         with gil:
             raise ValueError("size must be a multiple of 8")
-    id = <char*>malloc((size / 8) * sizeof(char))
+    id = <char*>malloc((size // 8) * sizeof(char))
     i=0
     while i < size:
-        id[i/8] = _longid_to_char(longid + i)
+        id[i//8] = _longid_to_char(longid + i)
         i+=8
     return id
 
@@ -87,21 +89,27 @@ def id_to_longid(char* id, int l=20):
 
 def nbit(s, n):
     """Renvois la valeur du nième bit de la chaine s"""
-    c=str(s)[n/8]
-    return int(format(ord(c), '08b')[n % 8])
+    if six.PY3:
+        c = s[n//8]
+    else:
+        c = ord(s[n//8])
+    return int(format(c, '08b')[n % 8])
 
 def nflip(s, n):
     """Renvois la chaine s dont la valeur du nième bit a été retourné"""
     bit = [0b10000000, 0b01000000, 0b00100000, 0b00010000, 0b00001000, 0b00000100, 0b00000010, 0b00000001]
-    return s[:n/8]  + chr(ord(s[n/8]) ^ bit[n % 8]) + s[n/8+1:]
+    if six.PY2:
+        return s[:n//8]  + chr(ord(s[n//8]) ^ bit[n % 8]) + s[n//8+1:]
+    else:
+        return s[:n//8]  + bytes([s[n//8] ^ bit[n % 8]]) + s[n//8+1:]
 
 def nset(s, n , i):
     bit1 = [0b10000000, 0b01000000, 0b00100000, 0b00010000, 0b00001000, 0b00000100, 0b00000010, 0b00000001]
     bit0 = [0b01111111, 0b10111111, 0b11011111, 0b11101111, 0b11110111, 0b11111011, 0b11111101, 0b11111110]
     if i == 1:
-        return s[:n/8]  + chr(ord(s[n/8]) | bit1[n % 8]) + s[n/8+1:]
+        return s[:n//8]  + chr(ord(s[n//8]) | bit1[n % 8]) + s[n//8+1:]
     elif i == 0:
-        return s[:n/8]  + chr(ord(s[n/8]) & bit0[n % 8]) + s[n/8+1:]
+        return s[:n//8]  + chr(ord(s[n//8]) & bit0[n % 8]) + s[n//8+1:]
     else:
         raise ValueError("i doit être 0 ou 1")
     
@@ -150,10 +158,10 @@ class ID(object):
         return self.value[i]
 
     def __str__(self):
-        return self.value
+        raise NotImplementedError()
 
     def __repr__(self):
-        return self.value.encode("hex")
+        return binascii.b2a_hex(self.value).decode()
 
     def __eq__(self, other):    
         if isinstance(other, ID):
@@ -176,9 +184,15 @@ class ID(object):
 
     def __xor__(self, other):
         if isinstance(other, ID):
-            return ''.join(chr(ord(a) ^ ord(b)) for a,b in zip(self.value, other.value))
-        elif isinstance(other, str):
-            return ''.join(chr(ord(a) ^ ord(b)) for a,b in zip(self.value, other))
+            if six.PY2:
+                return ''.join(chr(ord(a) ^ ord(b)) for a,b in zip(self.value, other.value))
+            else:
+                return bytes([a ^ b for a,b in zip(self.value, other.value)])
+        elif isinstance(other, bytes):
+            if six.PY2:
+                return ''.join(chr(ord(a) ^ ord(b)) for a,b in zip(self.value, other))
+            else:
+                return bytes([a ^ b for a,b in zip(self.value, other)])
         else:
             raise TypeError("unsupported operand type(s) for ^: 'ID' and '%s'" % type(other).__name__)
 

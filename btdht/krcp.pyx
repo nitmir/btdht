@@ -16,7 +16,9 @@ from libc.string cimport strlen, strncmp, strcmp, strncpy, strcpy
 from libc.stdlib cimport atoi, atoll, malloc, free
 from cython.parallel import prange
 
-import utils
+import six
+
+from btdht import utils
 
 cdef int str_to_int(char* data, int len) nogil:
     cdef char* msg = NULL
@@ -34,13 +36,13 @@ cdef int str_to_int(char* data, int len) nogil:
 cdef int str_to_long_long(char* data, int len) nogil:
     cdef char* msg = NULL
     cdef long long i
-    if data[0] == '-' and len > 16 or len > 17:
+    if data[0] == b'-' and len > 16 or len > 17:
         with gil:
             raise EnvironmentError("Trying to convert %s to long long but it's too big" % data[:len])
     try:
         msg = <char *>malloc((len+1) * sizeof(char))
         strncpy(msg, data, len)
-        msg[len]='\0'
+        msg[len]=b'\0'
         i = atoll(msg)
     finally:
         if msg != NULL:
@@ -77,17 +79,17 @@ cdef int _decode_pass_list(char* data, int *i, int max) nogil except -1:
     if i[0] >= max + 1:
         with gil:
             raise ValueError("%s > %s : %r" % (i[0], max, data[:max]))
-    if data[i[0]] != "l":
+    if data[i[0]] != b"l":
         return False
     i[0]+=1
-    while data[i[0]] != 'e' and i[0] < max:
+    while data[i[0]] != b'e' and i[0] < max:
         if not _decode_string(data, i, max, j) and not  _decode_int(data, i, max, ll) and not _decode_pass_list(data, i, max) and not _decode_pass_dict(data, i, max):
             with gil:
                 raise ValueError("Unable to parse one of the element of the list %d %r" % (i[0], data[:max]))
     if i[0] >= max:
         with gil:
             raise ValueError("list_pass: %s > %s : %r" % (i[0], max, data[:max]))
-    if data[i[0]] != 'e':
+    if data[i[0]] != b'e':
         return False
     i[0]+=1
     return True
@@ -98,37 +100,37 @@ cdef int _decode_pass_dict(char* data, int *i, int max) nogil except -1:
     if i[0] >= max + 1:
         with gil:
             raise ValueError("%s > %s : %r" % (i[0], max, data[:max]))
-    if data[i[0]] != "d":
+    if data[i[0]] != b"d":
         return False
     i[0]+=1
-    while data[i[0]] != 'e' and i[0] < max:
+    while data[i[0]] != b'e' and i[0] < max:
         if not _decode_string(data, i, max, j) or (not _decode_string(data, i, max, j) and not _decode_int(data, i, max, ll) and not _decode_pass_list(data, i, max) and not _decode_pass_dict(data, i, max)):
             with gil:
                 raise ValueError("Unable to parse one of the element of the dict %d %r" % (i[0], data[:max]))
     if i[0] >= max:
         with gil:
             raise ValueError("dict_pass: %s > %s : %r" % (i[0], max, data[:max]))
-    if data[i[0]] != 'e':
+    if data[i[0]] != b'e':
         return False
     i[0]+=1
     return True
     
 cdef int _decode_string(char* data, int* i, int max, int* j) nogil except -1:
     cdef int ret
-    if data[i[0]] == '0' \
-    or data[i[0]] == '2' \
-    or data[i[0]] == '3' \
-    or data[i[0]] == '4' \
-    or data[i[0]] == '5' \
-    or data[i[0]] == '6' \
-    or data[i[0]] == '7' \
-    or data[i[0]] == '8' \
-    or data[i[0]] == '9' \
-    or data[i[0]] == '1':
+    if data[i[0]] == b'0' \
+    or data[i[0]] == b'2' \
+    or data[i[0]] == b'3' \
+    or data[i[0]] == b'4' \
+    or data[i[0]] == b'5' \
+    or data[i[0]] == b'6' \
+    or data[i[0]] == b'7' \
+    or data[i[0]] == b'8' \
+    or data[i[0]] == b'9' \
+    or data[i[0]] == b'1':
         j[0]=i[0]+1
-        while data[j[0]] != ':' and j[0] < max:
+        while data[j[0]] != b':' and j[0] < max:
             j[0]+=1
-        if data[j[0]] == ':':
+        if data[j[0]] == b':':
             i[0] = j[0] + str_to_int(data + i[0], j[0]-i[0]) + 1
             j[0]+=1
             if i[0] <= max:
@@ -148,12 +150,12 @@ cdef int _decode_int(char* data, int *i, int max, long long  *myint) nogil excep
        otherwise, use the function from utils that can decode arbitrary long integer
     """
     cdef int j
-    if data[i[0]] == 'i':
+    if data[i[0]] == b'i':
         i[0]+=1
         j = i[0]
-        while data[j]!='e' and j < max:
+        while data[j] != b'e' and j < max:
             j+=1
-        if data[j] == 'e':
+        if data[j] == b'e':
             myint[0]=str_to_long_long(data + i[0], j-i[0])
             i[0]=j+1
             if i[0] <= max:
@@ -171,11 +173,11 @@ cdef int _encode_int(char* data, int *i, int max, int j) nogil:
     cdef int l
     l = int_length(j)
     if max >= i[0] + l + 2:
-         data[i[0]]='i'
+         data[i[0]]=b'i'
          i[0]+=1
-         sprintf(data + i[0], "%d", j)
+         sprintf(data + i[0], b"%d", j)
          i[0]+=l
-         data[i[0]]='e'
+         data[i[0]]=b'e'
          i[0]+=1
          return True
     else:
@@ -186,9 +188,9 @@ cdef int _encode_string(char* data, int* i, int max, char* str, int strlen) nogi
     cdef int l
     l = int_length(strlen)
     if max >= i[0] + l + 1 + strlen: # size as char + : + string
-        sprintf(data + i[0], "%d", strlen)
+        sprintf(data + i[0], b"%d", strlen)
         i[0]+=l
-        data[i[0]]=':'
+        data[i[0]]=b':'
         i[0]+=1
         strncpy(data + i[0], str, strlen)
         i[0]+=strlen
@@ -198,7 +200,7 @@ cdef int _encode_string(char* data, int* i, int max, char* str, int strlen) nogi
         return False
 
 class BError(Exception):
-    y = "e"
+    y = b"e"
     t = None # string value representing a transaction ID
     e = None # a list. The first element is an integer representing the error code. The second element is a string containing the error message
     def __init__(self, t, e, **kwargs):
@@ -207,22 +209,27 @@ class BError(Exception):
         self.t = t
         self.e = e
         super(BError, self).__init__(*e, **kwargs)
+
+    def encode(self):
+        return utils.bencode({b"y":self.y, b"t":self.t, b"e":self.e})
+
     def __str__(self):
-        return utils.bencode({"y":self.y, "t":self.t, "e":self.e})
+        raise NotImplementedError()
+
     def __repr__(self):
-        return "%s: %s" % (self.__class__.__name__, self.e)
+        return "%s: %r" % (self.__class__.__name__, self.e)
 
 class GenericError(BError):
-    def __init__(self, t, msg=""):
+    def __init__(self, t, msg=b""):
         super(GenericError, self).__init__(t=t, e=[201, msg])
 class ServerError(BError):
-    def __init__(self, t, msg="Server Error"):
+    def __init__(self, t, msg=b"Server Error"):
         super(ServerError, self).__init__(t=t, e=[202, msg])
 class ProtocolError(BError):
-    def __init__(self, t, msg="Protocol Error"):
+    def __init__(self, t, msg=b"Protocol Error"):
         super(ProtocolError, self).__init__(t=t, e=[203, msg])
 class MethodUnknownError(BError):
-    def __init__(self, t, msg="Method Unknow"):
+    def __init__(self, t, msg=b"Method Unknow"):
         super(MethodUnknownError, self).__init__(t=t, e=[204, msg])
 
 
@@ -484,24 +491,24 @@ cdef class BMessage:
         cdef char* nodes = NULL
         cdef char* token = NULL
         cdef char** values = NULL
-        s = str(dht.myid)
+        s = dht.myid.value
         id = s
         with nogil:
-            if self.has_y and self.y_len == 1 and strncmp(self._y, "q", 1) == 0:
+            if self.has_y and self.y_len == 1 and strncmp(self._y, b"q", 1) == 0:
                 if self.has_q:
-                    if self.q_len == 4 and strncmp(self._q, "ping", 4) == 0:
-                        rep.set_y("r", 1)
+                    if self.q_len == 4 and strncmp(self._q, b"ping", 4) == 0:
+                        rep.set_y(b"r", 1)
                         rep.set_t(self._t, self.t_len)
                         rep.set_r(True)
                         rep.set_id(id, 20)
                         self._encode()
                         with gil:
                             return rep
-                    elif self.q_len == 9 and strncmp(self._q, "find_nodes", 9) == 0:
+                    elif self.q_len == 9 and strncmp(self._q, b"find_nodes", 9) == 0:
                         if not self.has_target:
                             with gil:
-                                raise ProtocolError(self.t, "target missing")
-                        rep.set_y("r", 1)
+                                raise ProtocolError(self.t, b"target missing")
+                        rep.set_y(b"r", 1)
                         rep.set_t(self._t, self.t_len)
                         rep.set_r(True)
                         rep.set_id(id, 20)
@@ -513,11 +520,11 @@ cdef class BMessage:
                         self._encode()
                         with gil:
                             return rep
-                    elif self.q_len == 9 and strncmp(self._q, "get_peers", 9) == 0:
+                    elif self.q_len == 9 and strncmp(self._q, b"get_peers", 9) == 0:
                         if not self.has_info_hash:
                             with gil:
-                                raise ProtocolError(self.t, "info_hash missing")
-                        rep.set_y("r", 1)
+                                raise ProtocolError(self.t, b"info_hash missing")
+                        rep.set_y(b"r", 1)
                         rep.set_t(self._t, self.t_len)
                         rep.set_r(True)
                         rep.set_id(id, 20)
@@ -540,21 +547,21 @@ cdef class BMessage:
                         self._encode()
                         with gil:
                             return rep
-                    elif self.q_len == 13 and strncmp(self._q, "announce_peer", 13) == 0:
+                    elif self.q_len == 13 and strncmp(self._q, b"announce_peer", 13) == 0:
                         if not self.has_info_hash:
                             with gil:
-                                raise ProtocolError(self.t, "info_hash missing")
+                                raise ProtocolError(self.t, b"info_hash missing")
                         if not self.has_port:
                             with gil:
-                                raise ProtocolError(self.t, "port missing")
+                                raise ProtocolError(self.t, b"port missing")
                         if not self.has_token:
                             with gil:
-                                raise ProtocolError(self.t, "token missing")
+                                raise ProtocolError(self.t, b"token missing")
                         with gil:
                             s = dht._get_valid_token(self.addr[0])
-                            if not self["token"] in s:
-                                raise ProtocolError(self.t, "bad token")
-                        rep.set_y("r", 1)
+                            if not self[b"token"] in s:
+                                raise ProtocolError(self.t, b"bad token")
+                        rep.set_y(b"r", 1)
                         rep.set_t(self._t, self.t_len)
                         rep.set_r(True)
                         rep.set_id(id, 20)
@@ -563,7 +570,7 @@ cdef class BMessage:
                             return rep
                     else:
                         with gil:
-                            raise MethodUnknownError(self.t, "Method %s Unknown" % self.q)
+                            raise MethodUnknownError(self.t, b"Method %s Unknown" % self.q)
                 else:
                     printf("not ping %d\n", 0)
             else:
@@ -574,7 +581,7 @@ cdef class BMessage:
         if i[0] + self.values_nb * 8 + 2 > max:
             printf("encode_values: %d < %d\n", max, i[0] + self.values_nb * 8 + 2)
             return False
-        data[i[0]]='l'
+        data[i[0]]=b'l'
         i[0]+=1
         for j in prange(self.values_nb):
             #printf("encode value %d in encode_values\n", j)
@@ -582,7 +589,7 @@ cdef class BMessage:
             i[0]+=2
             strncpy(data + i[0], self.values[j], 6)
             i[0]+=6
-        data[i[0]]='e'
+        data[i[0]]=b'e'
         i[0]+=1
         return True
         
@@ -590,13 +597,13 @@ cdef class BMessage:
         if i[0] + 1 > max:
             printf("encode_secondary:%d\n", 0)
             return False
-        data[i[0]] = 'd'
+        data[i[0]] = b'd'
         i[0]+=1
         if self.has_id:
             if i[0] + 4 > max:
                 printf("encode_secondary:%d\n", 1)
                 return False
-            strncpy(data + i[0], "2:id", 4)
+            strncpy(data + i[0], b"2:id", 4)
             i[0]+=4
             if not _encode_string(data, i, max, self.id, 20):
                 return False
@@ -604,7 +611,7 @@ cdef class BMessage:
             if i[0] + 15 > max:
                 printf("encode_secondary:%d\n", 2)
                 return False
-            strncpy(data + i[0], "12:implied_port", 15)
+            strncpy(data + i[0], b"12:implied_port", 15)
             i[0]+=15
             if not _encode_int(data, i, max, self.implied_port):
                 return False
@@ -612,7 +619,7 @@ cdef class BMessage:
             if i[0] + 11 > max:
                 printf("encode_secondary:%d\n", 3)
                 return False
-            strncpy(data + i[0], "9:info_hash", 11)
+            strncpy(data + i[0], b"9:info_hash", 11)
             i[0]+=11
             if not _encode_string(data, i, max, self.info_hash, 20):
                 return False
@@ -620,7 +627,7 @@ cdef class BMessage:
             if i[0] + 7 > max:
                 printf("encode_secondary:%d\n", 4)
                 return False
-            strncpy(data + i[0], "5:nodes", 7)
+            strncpy(data + i[0], b"5:nodes", 7)
             i[0]+=7
             if not _encode_string(data, i, max, self.nodes, self.nodes_len):
                 return False
@@ -628,7 +635,7 @@ cdef class BMessage:
             if i[0] + 6 > max:
                 printf("encode_secondary:%d\n", 5)
                 return False
-            strncpy(data + i[0], "4:port", 6)
+            strncpy(data + i[0], b"4:port", 6)
             i[0]+=6
             if not _encode_int(data, i, max, self.port):
                 return False
@@ -636,7 +643,7 @@ cdef class BMessage:
             if i[0] + 8 > max:
                 printf("encode_secondary:%d\n", 6)
                 return False
-            strncpy(data + i[0], "6:target", 8)
+            strncpy(data + i[0], b"6:target", 8)
             i[0]+=8
             if not _encode_string(data, i, max, self.target, 20):
                 return False
@@ -644,7 +651,7 @@ cdef class BMessage:
             if i[0] + 7 > max:
                 printf("encode_secondary:%d\n", 7)
                 return False
-            strncpy(data + i[0], "5:token", 7)
+            strncpy(data + i[0], b"5:token", 7)
             i[0]+=7
             if not _encode_string(data, i, max, self.token, self.token_len):
                 return False
@@ -652,14 +659,14 @@ cdef class BMessage:
             if i[0] + 8 > max:
                 printf("encode_secondary:%d\n", 8)
                 return False
-            strncpy(data + i[0], "6:values", 8)
+            strncpy(data + i[0], b"6:values", 8)
             i[0]+=8
             if not self._encode_values(data, i, max):
                 return False
         if i[0] + 1 > max:
             printf("encode_secondary:%d\n", 9)
             return False
-        data[i[0]] = 'e'
+        data[i[0]] = b'e'
         i[0]+=1
         return True
 
@@ -667,7 +674,7 @@ cdef class BMessage:
         if i[0] + 2 > max:
             printf("encode_error: %d", 0)
             return False
-        data[i[0]] = 'l'
+        data[i[0]] = b'l'
         i[0]+=1
         if not _encode_int(data, i, max, self._errno):
             return False
@@ -676,7 +683,7 @@ cdef class BMessage:
         if i[0] >= max:
             printf("encode_error: %d", 1)
             return False
-        data[i[0]] = 'e'
+        data[i[0]] = b'e'
         i[0]+=1
         return True
 
@@ -684,13 +691,13 @@ cdef class BMessage:
         if i[0] + 1 > max:
             printf("encode_main: %d\n", 0)
             return False
-        data[i[0]] = 'd'
+        data[i[0]] = b'd'
         i[0]+=1
         if self.a:
             if i[0] + 3 > max:
                 printf("encode_main: %d\n", 1)
                 return False
-            strncpy(data + i[0], "1:a", 3)
+            strncpy(data + i[0], b"1:a", 3)
             i[0]+=3
             if not self._encode_secondary_dict(data, i, max):
                 return False
@@ -698,7 +705,7 @@ cdef class BMessage:
             if i[0] + 3 > max:
                 printf("encode_main: %d\n", 8)
                 return False
-            strncpy(data + i[0], "1:e", 3)
+            strncpy(data + i[0], b"1:e", 3)
             i[0]+=3
             if not self._encode_error(data, i, max):
                 return False
@@ -706,7 +713,7 @@ cdef class BMessage:
             if i[0] + 3 > max:
                 printf("encode_main: %d\n", 2)
                 return False
-            strncpy(data + i[0], "1:q", 3)
+            strncpy(data + i[0], b"1:q", 3)
             i[0]+=3
             if not _encode_string(data, i, max, self._q, self.q_len):
                 return False
@@ -714,7 +721,7 @@ cdef class BMessage:
             if i[0] + 3 > max:
                 printf("encode_main: %d\n", 3)
                 return False
-            strncpy(data + i[0], "1:r", 3)
+            strncpy(data + i[0], b"1:r", 3)
             i[0]+=3
             if not self._encode_secondary_dict(data, i, max):
                 return False
@@ -722,7 +729,7 @@ cdef class BMessage:
             if i[0] + 3 > max:
                 printf("encode_main: %d\n", 4)
                 return False
-            strncpy(data + i[0], "1:t", 3)
+            strncpy(data + i[0], b"1:t", 3)
             i[0]+=3
             if not _encode_string(data, i, max, self._t, self.t_len):
                 return False
@@ -730,7 +737,7 @@ cdef class BMessage:
             if i[0] + 3 > max:
                 printf("encode_main: %d\n", 5)
                 return False
-            strncpy(data + i[0], "1:v", 3)
+            strncpy(data + i[0], b"1:v", 3)
             i[0]+=3
             if not _encode_string(data, i, max, self._v, self.v_len):
                 return False
@@ -738,14 +745,14 @@ cdef class BMessage:
             if i[0] + 3 > max:
                 printf("encode_main: %d %d\n", 6, i[0])
                 return False
-            strncpy(data + i[0], "1:y", 3)
+            strncpy(data + i[0], b"1:y", 3)
             i[0]+=3
             if not _encode_string(data, i, max, self._y, self.y_len):
                 return False
         if i[0] + 1 > max:
             printf("encode_main: %d\n", 7)
             return False
-        data[i[0]] = 'e'
+        data[i[0]] = b'e'
         i[0]+=1
         return True
 
@@ -812,8 +819,11 @@ cdef class BMessage:
         else:
             raise EnvironmentError("Unable to encode BMessage")
 
+    def __repr__(self):
+        return "%r" % self.encode()
+
     def __str__(self):
-        return self.encode()
+        raise NotImplementedError()
 
     property errno:
         def __get__(self):
@@ -837,13 +847,22 @@ cdef class BMessage:
 
     property addr:
         def __get__(self):
-            if self.addr_addr and self.addr_port:
-                return (self.addr_addr, self.addr_port)
+            if six.PY3:
+                if self.addr_addr_3 and self.addr_port:
+                    return (self.addr_addr_3, self.addr_port)
+                else:
+                    return None
             else:
-                return None
+                if self.addr_addr_2 and self.addr_port:
+                    return (self.addr_addr_2, self.addr_port)
+                else:
+                    return None
         def __set__(self, addr):
             if addr is not None:
-                self.addr_addr = addr[0]
+                if six.PY3:
+                    self.addr_addr_3 = addr[0]
+                else:
+                    self.addr_addr_2 = addr[0]
                 self.addr_port = addr[1]
         def __del__(self):
             self.addr_addr = None
@@ -928,21 +947,21 @@ cdef class BMessage:
 
     def __delitem__(self, char* key):
         with nogil:
-            if self.has_id and strcmp(key, "id") == 0:
+            if self.has_id and strcmp(key, b"id") == 0:
                 self.del_id()
-            elif self.has_target and strcmp(key, "target") == 0:
+            elif self.has_target and strcmp(key, b"target") == 0:
                 self.del_target()
-            elif self.has_info_hash and strcmp(key, "info_hash") == 0:
+            elif self.has_info_hash and strcmp(key, b"info_hash") == 0:
                 self.del_info_hash()
-            elif self.has_token and strcmp(key, "token") == 0:
+            elif self.has_token and strcmp(key, b"token") == 0:
                 self.del_token()
-            elif self.has_nodes and strcmp(key, "nodes") == 0:
+            elif self.has_nodes and strcmp(key, b"nodes") == 0:
                 self.del_nodes()
-            elif self.has_implied_port and strcmp(key, "implied_port") == 0:
+            elif self.has_implied_port and strcmp(key, b"implied_port") == 0:
                 self.del_implied_port()
-            elif self.has_port and strcmp(key, "port") == 0:
+            elif self.has_port and strcmp(key, b"port") == 0:
                 self.del_port()
-            elif self.has_values and strcmp(key, "values") == 0:
+            elif self.has_values and strcmp(key, b"values") == 0:
                 self.del_values()
             else:
                 with gil:
@@ -954,14 +973,14 @@ cdef class BMessage:
         cdef char** v
         cdef int l = 0
         with nogil:
-            if strcmp(key, "id") == 0:
+            if strcmp(key, b"id") == 0:
                 with gil:
                     if len(value) != 20:
                         raise ValueError("Can only set strings of length 20B")
                     j = value
                 self.set_id(j, 20)
                 return
-            elif strcmp(key, "target") == 0:
+            elif strcmp(key, b"target") == 0:
                 self.encoded_uptodate = False
                 with gil:
                     if len(value) != 20:
@@ -969,36 +988,36 @@ cdef class BMessage:
                     j = value
                 self.set_target(j, 20)
                 return
-            elif strcmp(key, "info_hash") == 0:
+            elif strcmp(key, b"info_hash") == 0:
                 with gil:
                     if len(value) != 20:
                         raise ValueError("Can only set strings of length 20B")
                     j = value
                 self.set_info_hash(j, 20)
                 return
-            elif strcmp(key, "token") == 0:
+            elif strcmp(key, b"token") == 0:
                 with gil:
                     l = len(value)
                     j = value
                 self.set_token(j, l)
                 return
-            elif strcmp(key, "nodes") == 0:
+            elif strcmp(key, b"nodes") == 0:
                 with gil:
                     l = len(value)
                     j = value
                 self.set_nodes(j, l)
                 return
-            elif strcmp(key, "implied_port") == 0:
+            elif strcmp(key, b"implied_port") == 0:
                 with gil:
                     i = value
                 self.set_implied_port(i)
                 return
-            elif strcmp(key, "port") == 0:
+            elif strcmp(key, b"port") == 0:
                 with gil:
                     i = value
                 self.set_port(i)
                 return
-            elif strcmp(key, "values") == 0:
+            elif strcmp(key, b"values") == 0:
                 with gil:
                     v = vlist_to_array(value)
                     i = len(value)
@@ -1036,7 +1055,7 @@ cdef class BMessage:
         if i[0] > max:
             with gil:
                 raise ValueError("%s > %s : %r" % (i[0], max, data[:max]))
-        if data[i[0]] != 'l':
+        if data[i[0]] != b'l':
             return False
         i[0]+=1
         if not _decode_int(data, i, max, ll):
@@ -1045,7 +1064,7 @@ cdef class BMessage:
         if not _decode_string(data, i, max, j):
             return False
         self.set_errmsg(data + j[0], i[0]-j[0])
-        if data[i[0]] != 'e':
+        if data[i[0]] != b'e':
             return False
         i[0]+=1
         return True
@@ -1059,35 +1078,35 @@ cdef class BMessage:
             with gil:
                 raise ValueError("Fail to decode dict key %d %s" % (i[0], data[:max]))
         
-        if (i[0]-j[0]) == 1 and strncmp(data + j[0], "a", i[0]-j[0]) == 0:
+        if (i[0]-j[0]) == 1 and strncmp(data + j[0], b"a", i[0]-j[0]) == 0:
             return self._decode_dict(data, i, max) and self.set_a(True)
-        elif (i[0]-j[0]) == 1 and strncmp(data + j[0], "r", i[0]-j[0]) == 0:
+        elif (i[0]-j[0]) == 1 and strncmp(data + j[0], b"r", i[0]-j[0]) == 0:
             return self._decode_dict(data, i, max) and self.set_r(True)
-        elif (i[0]-j[0]) == 1 and strncmp(data + j[0], "e", i[0]-j[0]) == 0:
+        elif (i[0]-j[0]) == 1 and strncmp(data + j[0], b"e", i[0]-j[0]) == 0:
             return self._decode_error(data, i, max) and self.set_e(True)
-        elif (i[0]-j[0]) == 1 and strncmp(data + j[0], "t", i[0]-j[0]) == 0:
+        elif (i[0]-j[0]) == 1 and strncmp(data + j[0], b"t", i[0]-j[0]) == 0:
             return _decode_string(data, i, max, j) and self.set_t(data + j[0], i[0]-j[0])
-        elif (i[0]-j[0]) == 1 and strncmp(data + j[0], "v", i[0]-j[0]) == 0:
+        elif (i[0]-j[0]) == 1 and strncmp(data + j[0], b"v", i[0]-j[0]) == 0:
             return _decode_string(data, i, max, j) and self.set_v(data + j[0], i[0]-j[0])
-        elif (i[0]-j[0]) == 1 and strncmp(data + j[0], "y", i[0]-j[0]) == 0:
+        elif (i[0]-j[0]) == 1 and strncmp(data + j[0], b"y", i[0]-j[0]) == 0:
             return _decode_string(data, i, max, j) and self.set_y(data + j[0], i[0]-j[0])
-        elif (i[0]-j[0]) == 1 and strncmp(data + j[0], "q", i[0]-j[0]) == 0:
+        elif (i[0]-j[0]) == 1 and strncmp(data + j[0], b"q", i[0]-j[0]) == 0:
             return _decode_string(data, i, max, j) and self.set_q(data + j[0], i[0]-j[0])
-        elif (i[0]-j[0]) == 2 and strncmp(data + j[0], "id", i[0]-j[0]) == 0:
+        elif (i[0]-j[0]) == 2 and strncmp(data + j[0], b"id", i[0]-j[0]) == 0:
             return _decode_string(data, i, max, j) and self.set_id(data + j[0], i[0]-j[0])
-        elif (i[0]-j[0]) == 6 and strncmp(data + j[0], "target", i[0]-j[0]) == 0:
+        elif (i[0]-j[0]) == 6 and strncmp(data + j[0], b"target", i[0]-j[0]) == 0:
             return _decode_string(data, i, max, j) and self.set_target(data + j[0], i[0]-j[0])
-        elif (i[0]-j[0]) == 9 and strncmp(data + j[0], "info_hash", i[0]-j[0]) == 0:
+        elif (i[0]-j[0]) == 9 and strncmp(data + j[0], b"info_hash", i[0]-j[0]) == 0:
             return _decode_string(data, i, max, j) and self.set_info_hash(data + j[0], i[0]-j[0])
-        elif (i[0]-j[0]) == 12 and strncmp(data + j[0], "implied_port", i[0]-j[0]) == 0:
+        elif (i[0]-j[0]) == 12 and strncmp(data + j[0], b"implied_port", i[0]-j[0]) == 0:
             return _decode_int(data, i, max, ll) and self.set_implied_port(ll[0])
-        elif (i[0]-j[0]) == 4 and strncmp(data + j[0], "port", i[0]-j[0]) == 0:
+        elif (i[0]-j[0]) == 4 and strncmp(data + j[0], b"port", i[0]-j[0]) == 0:
             return _decode_int(data, i, max, ll) and self.set_port(ll[0])
-        elif (i[0]-j[0]) == 5 and strncmp(data + j[0], "token", i[0]-j[0]) == 0:
+        elif (i[0]-j[0]) == 5 and strncmp(data + j[0], b"token", i[0]-j[0]) == 0:
             return _decode_string(data, i, max, j) and self.set_token(data + j[0], i[0]-j[0])
-        elif (i[0]-j[0]) == 5 and strncmp(data + j[0], "nodes", i[0]-j[0]) == 0:
+        elif (i[0]-j[0]) == 5 and strncmp(data + j[0], b"nodes", i[0]-j[0]) == 0:
             return _decode_string(data, i, max, j) and self.set_nodes(data + j[0], i[0]-j[0])
-        elif (i[0]-j[0]) == 6 and strncmp(data + j[0], "values", i[0]-j[0]) == 0:
+        elif (i[0]-j[0]) == 6 and strncmp(data + j[0], b"values", i[0]-j[0]) == 0:
             if self._decode_values(data, i, max):
                 return True
             else:
@@ -1120,7 +1139,7 @@ cdef class BMessage:
         if i[0] >= max:
             with gil:
                 raise ValueError("%s > %s : %r" % (i[0], max, data[:max]))
-        if not data[i[0]] == 'l':
+        if not data[i[0]] == b'l':
             return False
         i[0]+=1
         while _decode_string(data, i, max, j):
@@ -1128,7 +1147,7 @@ cdef class BMessage:
                 with gil:
                     raise ValueError("element of values are expected to be of length 6 and not %s" % (i[0]-j[0]))
             c+=1
-        if i[0] >=  max or data[i[0]] != 'e':
+        if i[0] >=  max or data[i[0]] != b'e':
             with gil:
                 raise ValueError("End of values list not found %s >= %s found %s elements" % (i[0], max, c))
         i[0] = k
@@ -1144,14 +1163,14 @@ cdef class BMessage:
             
     cdef int _decode_dict(self, char* data, int *i, int max) nogil except -1:
         cdef int k
-        if data[i[0]] == 'd':
+        if data[i[0]] == b'd':
             i[0]+=1
-            while data[i[0]] != 'e' and i[0] < max:
+            while data[i[0]] != b'e' and i[0] < max:
                 k = i[0]
                 if not self._decode_dict_elm(data, i, max):
                     with gil:
                         raise ValueError("fail to decode dict element %d %r" % (k, data[:max]))
-        if data[i[0]] != 'e':
+        if data[i[0]] != b'e':
             with gil:
                 raise ValueError("End of dict not found %s>=%d %r" % (i[0], max, data[:max]))
         else:

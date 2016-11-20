@@ -17,6 +17,7 @@ import os
 import IN
 import sys
 import time
+import six
 try:
     import Queue
 except ImportError:
@@ -28,6 +29,7 @@ import socket
 import select
 import collections
 import netaddr
+import binascii
 from functools import total_ordering, reduce
 from threading import Thread, Lock
 from random import shuffle
@@ -149,7 +151,7 @@ cdef class DHT_BASE:
         """
         nodes_nb = 0
         if filename is None:
-            myid = self.myid.value.encode("hex")
+            myid = binascii.b2a_hex(self.myid.value)
             filename = "dht_%s.status" % myid
         with open(filename, 'wb') as f:
             for bucket in self.root.trie.values():
@@ -172,7 +174,7 @@ cdef class DHT_BASE:
         """
         nodes_nb = 0
         if filename is None:
-            myid = self.myid.value.encode("hex")
+            myid = binascii.b2a_hex(self.myid.value)
             filename = "dht_%s.status" % myid
         try:
             with open(filename, 'rb') as f:
@@ -310,7 +312,7 @@ cdef class DHT_BASE:
 
     def init_socket(self):
         """Initialize the UDP socket of the DHT"""
-        self.debug(0, "init socket for %s" % self.myid.value.encode("hex"))
+        self.debug(0, "init socket for %s" % binascii.b2a_hex(self.myid.value))
         if self.sock:
              try:self.sock.close()
              except: pass
@@ -372,7 +374,7 @@ cdef class DHT_BASE:
                 self.sleep(0.1)
         if not info_hash in self._get_closest_loop_lock:
             self._get_closest_loop_lock[info_hash]=time.time()
-            self.debug(2, "get closest hash %s" % info_hash.encode("hex"))
+            self.debug(2, "get closest hash %s" % binascii.b2a_hex(info_hash))
             self.root.register_torrent(info_hash)
             tried_nodes = set()
             ts = time.time() + delay
@@ -434,7 +436,7 @@ cdef class DHT_BASE:
             return peers
         else:
             self._get_peer_loop_lock[hash]=time.time()
-            self.debug(2, "get peers hash %s" % hash.encode("hex"))
+            self.debug(2, "get peers hash %s" % binascii.b2a_hex(hash))
             self.root.register_torrent(hash)
             tried_nodes = set()
             ts = time.time() + delay
@@ -491,13 +493,13 @@ cdef class DHT_BASE:
                         ts = time.time() + 2
                         # we search peers and we found as least limit of them
                         if (typ == "peers" and limit and hash in self._got_peers and self._got_peers[hash] and len(self._got_peers[hash])>=limit):
-                            self.debug(2, "Hash %s find peers" % hash.encode("hex"))
+                            self.debug(2, "Hash %s find peers" % binascii.b2a_hex(hash))
                             if callback:
                                 callback(self._get_peers(hash, compact=False))
                             on_stop(hash, typ)
                         # we search closest node and we don't find any closest
                         elif (typ == "closest" and closest == _closest):
-                            self.debug(2, "Hash %s find nodes" % hash.encode("hex"))
+                            self.debug(2, "Hash %s find nodes" % binascii.b2a_hex(hash))
                             if callback:
                                 callback(_closest)
                             on_stop(hash, typ)
@@ -509,13 +511,13 @@ cdef class DHT_BASE:
                     else:
                         # we search peers, and we found some
                         if (typ == "peers" and hash in self._got_peers and self._got_peers[hash]):
-                            self.debug(2, "Hash %s find peers" % hash.encode("hex"))
+                            self.debug(2, "Hash %s find peers" % binascii.b2a_hex(hash))
                             if callback:
                                 callback(self._get_peers(hash, compact=False))
                             on_stop(hash, typ)
                         # we did not found peers nor closest node althougth we ask every close nodes we know of
                         else:
-                            self.debug(2, "Hash %s not peers or nodes not found" % hash.encode("hex"))
+                            self.debug(2, "Hash %s not peers or nodes not found" % binascii.b2a_hex(hash))
                             if callback:
                                 callback([])
                             on_stop(hash, typ)
@@ -540,12 +542,12 @@ cdef class DHT_BASE:
            try:
                # In compact mode (to send over udp) return at most 70 peers to avoid udp fragmentation
                if compact:
-                   peers = [(-t,ip,port) for ((ip, port), t) in self._peers[info_hash].items()]
+                   peers = [(-t,ip,port) for ((ip, port), t) in six.iteritems(self._peers[info_hash])]
                    # putting the more recent annonces in first
                    peers.sort()
                    return [struct.pack("!4sH", socket.inet_aton(ip), port) for (_, ip, port) in peers[0:70]]
                else:
-                   peers = [(-t,ip,port) for ((ip, port), t) in self._got_peers[info_hash].items()]
+                   peers = [(-t,ip,port) for ((ip, port), t) in six.iteritems(self._got_peers[info_hash])]
                    # putting the more recent annonces in first
                    peers.sort()
                    return [(ip, port) for (_, ip, port) in peers]
@@ -578,7 +580,7 @@ cdef class DHT_BASE:
         """
         l = list(self.root.get_closest_nodes(id))
         if compact:
-            return "".join(n.compact_info() for n in l)
+            return b"".join(n.compact_info() for n in l)
         else:
             return list(self.root.get_closest_nodes(id))
     
@@ -587,20 +589,20 @@ cdef class DHT_BASE:
         self.debug(0,"Bootstraping")
         for addr in [("router.utorrent.com", 6881), ("genua.fr", 6880), ("dht.transmissionbt.com", 6881)]:
             msg = BMessage()
-            msg.y = 'q'
-            msg.q = "find_node"
+            msg.y = b'q'
+            msg.q = b"find_node"
             self._set_transaction_id(msg)
             msg.set_a(True)
-            msg["id"] = self.myid.value
-            msg["target"] = self.myid.value
-            self.sendto(str(msg), addr)
+            msg[b"id"] = self.myid.value
+            msg[b"target"] = self.myid.value
+            self.sendto(msg.encode(), addr)
 
 
 
     def _update_node(self, obj):
         """update a node the in routing table on msg received"""
-        if obj.y == "q" or obj.y == "r":
-            id = obj.get("id")
+        if obj.y == b"q" or obj.y == b"r":
+            id = obj.get(b"id")
             if id:
                 try:
                     node = self.root.get_node(id)
@@ -609,9 +611,9 @@ cdef class DHT_BASE:
                 except NotFound:
                     node = Node(id=id, ip=obj.addr[0], port=obj.addr[1])
                     self.root.add(self, node)
-                if obj.y == "q":
+                if obj.y == b"q":
                     node.last_query = int(time.time())
-                elif obj.y == "r":
+                elif obj.y == b"r":
                     node.last_response = int(time.time())
                     node.failed = 0
             else:
@@ -686,7 +688,7 @@ cdef class DHT_BASE:
                         print("TypeError: %r in _recv_loop" % obj)
                         raise
                     # On query
-                    if obj.y == "q":
+                    if obj.y == b"q":
                         # process the query
                         self._process_query(obj)
                         # build the response object
@@ -696,9 +698,9 @@ cdef class DHT_BASE:
                         self.last_msg = time.time()
 
                         # send it
-                        self.sendto(str(reponse), addr)
+                        self.sendto(reponse.encode(), addr)
                     # on response
-                    elif obj.y == "r":
+                    elif obj.y == b"r":
                         # process the response
                         self._process_response(obj, obj_opt)
 
@@ -706,7 +708,7 @@ cdef class DHT_BASE:
                         self.last_msg = time.time()
                         self.last_msg_rep = time.time()
                     # on error
-                    elif obj.y == "e":
+                    elif obj.y == b"e":
                         # process it
                         self.on_error(obj, obj_opt)
 
@@ -715,7 +717,7 @@ cdef class DHT_BASE:
                     if self.debuglvl > 1:
                         traceback.print_exc()
                         self.debug(2, "error %r" % error)
-                    self.sendto(str(error), addr)
+                    self.sendto(error.encode(), addr)
                 # socket unavailable ?
                 except socket.error as e:
                     if e.errno not in [11, 1]: # 11: Resource temporarily unavailable
@@ -760,9 +762,12 @@ cdef class DHT_BASE:
         """Function cleaning datastructures of the DHT"""
         now = time.time()
 
-        for id in self.transaction_type.keys():
+        to_delete = []
+        for id in self.transaction_type:
             if now - self.transaction_type[id][1] > 30:
-                del self.transaction_type[id]
+                to_delete.append(id)
+        for key in to_delete:
+            del self.transaction_type[key]
 
         self._threads = [t for t in self._threads[:] if t.is_alive()]
 
@@ -778,35 +783,49 @@ cdef class DHT_BASE:
         # Long cleaning
         if now - self.long_clean >= 15 * 60:
             # cleaning old tokens
-            for ip in self.token.keys():
+            to_delete = []
+            for ip in self.token:
                 self.token[ip] = [t for t in self.token[ip] if (now - t[1]) < 600]
                 if not self.token[ip]:
-                    del self.token[ip]
-            for id in self.mytoken.keys():
+                    to_delete.append(ip)
+            for key in to_delete:
+                del self.token[key]
+            to_delete = []
+            for id in self.mytoken:
                 try:
                     if now - self.mytoken[id][1] > 600:
-                        del self.mytoken[id]
+                        to_delete.append(id)
                 except KeyError:
                     pass
+            for key in to_delete:
+                del self.mytoken[id]
 
             # cleaning old peer for announce_peer
-            for hash, peers in self._peers.items():
-                for peer in peers.keys():
+            to_delete = collections.defaultdict(list)
+            for hash, peers in six.iteritems(self._peers):
+                for peer in peers:
                     try:
                         if now - self._peers[hash][peer] > 30 * 60:
-                            del self._peers[hash][peer]
+                            to_delete[hash].append(peer)
                     except KeyError:
                         pass
+            for hash in to_delete:
+                for peer in to_delete[hash]:
+                    del self._peers[hash][peer]
                 if not self._peers[hash]:
                     del self._peers[hash]
 
-            for hash, peers in self._got_peers.items():
-                for peer in peers.keys():
+            to_delete = collections.defaultdict(list)
+            for hash, peers in six.iteritems(self._got_peers):
+                for peer in peers:
                     try:
                         if now - self._got_peers[hash][peer] > 15 * 60:
-                            del self._got_peers[hash][peer]
+                            to_delete[hash].append(peer)
                     except KeyError:
                         pass
+            for hash in to_delete:
+                for peer in to_delete[hash]:
+                    del self._got_peers[hash][peer]
                 if not self._got_peers[hash]:
                     del self._got_peers[hash]
 
@@ -934,7 +953,7 @@ cdef class DHT_BASE:
     def _on_ping_response(self, query, response):
         pass
     def _on_find_node_response(self, query, response):
-        nodes = Node.from_compact_infos(response.get("nodes", ""))
+        nodes = Node.from_compact_infos(response.get(b"nodes", b""))
         for node in nodes:
             try:
                 self.root.add(self, node)
@@ -943,15 +962,15 @@ cdef class DHT_BASE:
                 raise
         self.debug(2, "%s nodes added to routing table" % len(nodes))
     def _on_get_peers_response(self, query, response):
-        token = response.get("token")
+        token = response.get(b"token")
         if token:
-            self.mytoken[response["id"]]=(token, time.time())
-        for node in Node.from_compact_infos(response.get("nodes", "")):
+            self.mytoken[response[b"id"]]=(token, time.time())
+        for node in Node.from_compact_infos(response.get(b"nodes", "")):
             self.root.add(self, node)
-        for ipport in response.get("values", []):
+        for ipport in response.get(b"values", []):
             (ip, port) = struct.unpack("!4sH", ipport)
             ip = socket.inet_ntoa(ip)
-            self._add_peer_queried(query["info_hash"], ip=ip, port=port)
+            self._add_peer_queried(query[b"info_hash"], ip=ip, port=port)
     def _on_announce_peer_response(self, query, response):
         pass
 
@@ -963,23 +982,23 @@ cdef class DHT_BASE:
         pass
     def _on_announce_peer_query(self, query):
         try:
-            if query.get("implied_port", 0) != 0:
+            if query.get(b"implied_port", 0) != 0:
                 if query.addr[1] > 0 and query.addr[1] < 65536:
-                    self._add_peer(info_hash=query["info_hash"], ip=query.addr[0], port=query.addr[1])
+                    self._add_peer(info_hash=query[b"info_hash"], ip=query.addr[0], port=query.addr[1])
                 else:
                     self.debug(1, "Invalid port number on announce %s, sould be within 1 and 65535" % query.addr[1])
             else:
-                if query["port"] > 0 and query["port"] < 65536:
-                    self._add_peer(info_hash=query["info_hash"], ip=query.addr[0], port=query["port"])
+                if query[b"port"] > 0 and query[b"port"] < 65536:
+                    self._add_peer(info_hash=query[b"info_hash"], ip=query.addr[0], port=query[b"port"])
                 else:
                     self.debug(1, "Invalid port number on announce %s, sould be within 1 and 65535" % query["port"])
         except KeyError as e:
-            raise ProtocolError(query.t, "Message malformed: %s key is missing" % e.message)    
+            raise ProtocolError(query.t, b"Message malformed: %s key is missing" % e.message)    
 
 
     def _process_response(self, obj, query):
-        if query.q in ["find_node", "ping", "get_peers", "announce_peer"]:
-            getattr(self, '_on_%s_response' % query.q)(query, obj)
+        if query.q in [b"find_node", b"ping", b"get_peers", b"announce_peer"]:
+            getattr(self, '_on_%s_response' % query.q.decode())(query, obj)
         if query.q in self._to_process_registered:
             try:
                 self._to_process.put_nowait((query, obj))
@@ -988,8 +1007,8 @@ cdef class DHT_BASE:
             #getattr(self, 'on_%s_response' % query.q)(query, obj)
 
     def _process_query(self, obj):
-        if obj.q in ["find_node", "ping", "get_peers", "announce_peer"]:
-            getattr(self, '_on_%s_query' % obj.q)(obj)
+        if obj.q in [b"find_node", b"ping", b"get_peers", b"announce_peer"]:
+            getattr(self, '_on_%s_query' % obj.q.decode())(obj)
         if obj.q in self._to_process_registered:
             try:
                 self._to_process.put_nowait((obj, None))
@@ -1005,9 +1024,9 @@ cdef class DHT_BASE:
             try:
                 (query, response) = self._to_process.get(timeout=1)
                 if response is None:
-                    getattr(self, 'on_%s_query' % query.q)(query)
+                    getattr(self, 'on_%s_query' % query.q.decode())(query)
                 else:
-                    getattr(self, 'on_%s_response' % query.q)(query, response)
+                    getattr(self, 'on_%s_response' % query.q.decode())(query, response)
             except Queue.Empty:
                 pass
 
@@ -1020,24 +1039,24 @@ cdef class DHT_BASE:
             if self.debuglvl > 0:
                 traceback.print_exc()
                 self.debug(1, "%s for %r" % (e, addr))
-            raise ProtocolError("")
+            raise ProtocolError(b"")
         try:
-            if msg.y == "q":
+            if msg.y == b"q":
                 return msg, None
-            elif msg.y == "r":
+            elif msg.y == b"r":
                 if msg.t in self.transaction_type:
                     ttype = self.transaction_type[msg.t][0]
                     query = self.transaction_type[msg.t][2]
                     return msg, query
                 else:
-                    raise GenericError(msg.t, "transaction id unknown")
-            elif msg.y == "e":
+                    raise GenericError(msg.t, b"transaction id unknown")
+            elif msg.y == b"e":
                 query = self.transaction_type.get(msg.t, (None, None, None))[2]
                 if msg.errno == 201:
                     self.debug(2, "ERROR:201:%s pour %r" % (msg.errmsg, self.transaction_type.get(msg.t, {})))
                     return GenericError(msg.t, msg.errmsg), query
                 elif msg.errno == 202:
-                    self.debug(2, "ERROR:202:%s pour %r" % (msg.errmsg, self.transaction_type.get(msg.t, {})))
+                    self.debug(2, "ERROR:202:%s pour %r" % (msg.errmsg, self.transaction_type.get(msg.t, {})[2].encode()))
                     return ServerError(msg.t, msg.errmsg), query
                 elif msg.errno == 203:
                     t = self.transaction_type.get(msg.t)
@@ -1049,14 +1068,14 @@ cdef class DHT_BASE:
                     return MethodUnknownError(msg.t, msg.errmsg), query
                 else:
                     self.debug(3, "ERROR:%s:%s pour %r" % (msg.errno, msg.errmsg, self.transaction_type.get(msg.t, {})))
-                    raise MethodUnknownError(msg.t, "Error code %s unknown" % msg.errno)
+                    raise MethodUnknownError(msg.t, b"Error code %s unknown" % msg.errno)
             else:
                 self.debug(0, "UNKNOWN MSG: %s" % msg)
                 raise ProtocolError(msg.t)
         except KeyError as e:
-            raise ProtocolError(msg.t, "Message malformed: %s key is missing" % e.message)
+            raise ProtocolError(msg.t, b"Message malformed: %s key is missing" % e.message)
         except IndexError:
-            raise ProtocolError(msg.t, "Message malformed")
+            raise ProtocolError(msg.t, b"Message malformed")
 
 
 class BucketFull(Exception):
@@ -1097,7 +1116,7 @@ cdef class Node:
     cdef int _last_query
     cdef int _failed
 
-    def __init__(self, id,char* ip,int port, int last_response=0,int last_query=0,int failed=0):
+    def __init__(self, id,ip,int port, int last_response=0,int last_query=0,int failed=0):
         """
         Args:
           id (str): A 160bits (20 Bytes) identifier
@@ -1111,7 +1130,7 @@ cdef class Node:
         """
         cdef char* cip
         cdef char* cid
-        if ip[0] == b'0':
+        if ip[0] == u'0':
             raise ValueError("IP start with 0 *_* %r %r" % (ip, self._ip[:4]))
         tip = socket.inet_aton(ip)
         cip = tip
@@ -1187,9 +1206,9 @@ cdef class Node:
             if ip[0] == '0':
                 raise ValueError("IP start with 0 *_* %r %r" % (ip, self._ip[:4]))
             return ip
-        def __set__(self, char *ip):
+        def __set__(self, ip):
             cdef char* cip
-            if ip[0] == b'0':
+            if ip[0] == u'0':
                 raise ValueError("IP start with 0 *_* %r %r" % (ip, self._ip[:4]))
             tip = socket.inet_aton(ip)
             cip = tip
@@ -1224,11 +1243,11 @@ cdef class Node:
         """
         nodes = []
         length = len(infos)
-        if length/26*26 != length:
-            raise ProtocolError("", "nodes length should be a multiple of 26")
+        if length//26*26 != length:
+            raise ProtocolError(b"", b"nodes length should be a multiple of 26")
         i=0
         while i < length:
-            if infos[i+20:i+24] != '\0\0\0\0' and infos[i+24:i+26] != '\0\0':
+            if infos[i+20:i+24] != b'\0\0\0\0' and infos[i+24:i+26] != b'\0\0':
                 #try:
                     nodes.append(Node.from_compact_info(infos[i:i+26]))
                 #except ValueError as e:
@@ -1282,7 +1301,7 @@ cdef class Node:
         Args:
           dht (DHT_BASE): a dht instance
         """
-        id = str(dht.myid)
+        id = dht.myid.value
         msg = BMessage()
         dht._set_transaction_id(msg)
         msg.set_y("q", 1)
@@ -1290,7 +1309,7 @@ cdef class Node:
         msg.set_a(True)
         msg.set_id(id, len(dht.myid))
         self._failed+=1
-        dht.sendto(str(msg), (self.ip, self.port))
+        dht.sendto(msg.encode(), (self.ip, self.port))
 
     def find_node(self, DHT_BASE dht, target):
         """send a find_node query to the node
@@ -1310,7 +1329,7 @@ cdef class Node:
         msg.set_id(id, len(dht.myid))
         msg.set_target(target, tl)
         self._failed+=1
-        dht.sendto(str(msg), (self.ip, self.port))
+        dht.sendto(msg.encode(), (self.ip, self.port))
 
     def get_peers(self, DHT_BASE dht, info_hash):
         """send a get_peers query to the node
@@ -1330,7 +1349,7 @@ cdef class Node:
         msg.set_id(id, len(dht.myid))
         msg.set_info_hash(info_hash, ihl)
         self._failed+=1
-        dht.sendto(str(msg), (self.ip, self.port))
+        dht.sendto(msg.encode(), (self.ip, self.port))
 
     def announce_peer(self, DHT_BASE dht, info_hash, int port):
         """send a announce_peer query to the node
@@ -1357,7 +1376,7 @@ cdef class Node:
             msg.set_port(port)
             msg.set_token(token, len(info_hash))
             self._failed+=1
-            dht.sendto(str(msg), (self.ip, self.port))
+            dht.sendto(msg.encode(), (self.ip, self.port))
 
         else:
             raise NoTokenError()
@@ -1386,10 +1405,10 @@ class Bucket(list):
         """
         if not self.id:
             return True
-        if id.startswith(self.id[:self.id_length/8]):
+        if id.startswith(self.id[:self.id_length//8]):
             i=-1
             try:
-                for i in range(self.id_length/8*8, self.id_length):
+                for i in range(self.id_length//8*8, self.id_length):
                     if nbit(self.id, i) !=  nbit(id, i):
                         return False
                 return True
@@ -1399,7 +1418,7 @@ class Bucket(list):
         else:
             return False
 
-    def __init__(self, id="", id_length=0, init=None):
+    def __init__(self, id=b"", id_length=0, init=None):
         """
         Args:
           id (str): prefix identifier for the bucket
@@ -1418,23 +1437,23 @@ class Bucket(list):
         """return a random id handle by the bucket"""
         id = ID()
         id_length = self.id_length
-        id_end = id[id_length/8]
+        id_end = bytes(bytearray((id[id_length//8],)))
         tmp = ''
         if id_length>0:
             try:
-               id_start = self.id[id_length/8]
+               id_start = bytes(bytearray((self.id[id_length//8],)))
             except IndexError:
-                id_start = "\0"
+                id_start = b"\0"
             for i in range((id_length % 8)):
-                tmp +=str(nbit(id_start, i))
+                tmp += '1' if nbit(id_start, i) == 1 else '0'
         for i in range((id_length % 8), 8):
-            tmp +=str(nbit(id_end, i))
+            tmp += '1' if nbit(id_end, i) == 1 else '0'
         try:
-            char = chr(int(tmp, 2))
+            char = bytes(bytearray((int(tmp, 2),)))
         except ValueError:
             print(tmp)
             raise
-        return ID(self.id[0:id_length/8] + char + id[id_length/8+1:])
+        return ID(self.id[0:id_length//8] + char + id[id_length//8+1:])
 
     def get_node(self, id):
         """return the node with id `id` or raise NotFound"""
@@ -1495,7 +1514,7 @@ class Bucket(list):
         if self.id_length < 8*len(self.id):
             new_id = self.id
         else:
-            new_id = self.id + "\0"
+            new_id = self.id + b"\0"
         b1 = Bucket(id=new_id, id_length=self.id_length + 1)
         b2 = Bucket(id=nflip(new_id, self.id_length), id_length=self.id_length + 1)
         for node in self:
@@ -1942,7 +1961,7 @@ class RoutingTable(object):
             #        return
             #print prefix
             #print utils.id_to_longid(str(bucket.id))[:bucket.id_length]
-            prefix = utils.id_to_longid(str(bucket.id))[:bucket.id_length]
+            prefix = utils.id_to_longid(bucket.id)[:bucket.id_length]
             (zero_b, one_b) = self.trie[prefix].split(self, dht)
             (zero_b, one_b) = self.trie[prefix].split(self, dht)
             self.trie[prefix + u"1"] = one_b
@@ -1982,7 +2001,7 @@ class RoutingTable(object):
                 continue
             to_merge =  True
             for id in self.split_ids | self.info_hash:
-                if utils.id_to_longid(str(id)).startswith(key[:-1]):
+                if utils.id_to_longid(id).startswith(key[:-1]):
                     to_merge = False
                     break
             if to_merge:
@@ -1992,7 +2011,7 @@ class RoutingTable(object):
                         self.debug(2, "%s gone away while merging" % key)
                         continue
                     prefix0 = key
-                    prefix1 = key[:-1] + unicode(int(key[-1]) ^ 1)
+                    prefix1 = key[:-1] + six.text_type(int(key[-1]) ^ 1)
                     bucket0 = self.trie[prefix0]
                     if prefix1 in self.trie:
                         bucket1 = self.trie[prefix1]

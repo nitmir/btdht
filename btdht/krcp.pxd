@@ -42,7 +42,8 @@ cdef class BMessage:
     cdef int encoded_len
     cdef int encoded_uptodate
     cdef int debug
-    cdef char* addr_addr
+    cdef unicode addr_addr_3
+    cdef bytes addr_addr_2
     cdef int addr_port
 
     cdef int set_r(self, int value) nogil
