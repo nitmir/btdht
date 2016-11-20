@@ -997,7 +997,7 @@ cdef class DHT_BASE:
                 else:
                     self.debug(1, "Invalid port number on announce %s, sould be within 1 and 65535" % query["port"])
         except KeyError as e:
-            raise ProtocolError(query.t, b"Message malformed: %s key is missing" % e.message)
+            raise ProtocolError(query.t, b"Message malformed: %s key is missing" % e.args[0])
 
 
     def _process_response(self, obj, query):
@@ -1060,7 +1060,7 @@ cdef class DHT_BASE:
                     self.debug(2, "ERROR:201:%s pour %r" % (msg.errmsg, self.transaction_type.get(msg.t, {})))
                     return GenericError(msg.t, msg.errmsg), query
                 elif msg.errno == 202:
-                    self.debug(2, "ERROR:202:%s pour %r" % (msg.errmsg, self.transaction_type.get(msg.t, {})[2].encode()))
+                    self.debug(2, "ERROR:202:%s pour %r" % (msg.errmsg, self.transaction_type.get(msg.t, {})))
                     return ServerError(msg.t, msg.errmsg), query
                 elif msg.errno == 203:
                     t = self.transaction_type.get(msg.t)
@@ -1077,7 +1077,7 @@ cdef class DHT_BASE:
                 self.debug(0, "UNKNOWN MSG: %s" % msg)
                 raise ProtocolError(msg.t)
         except KeyError as e:
-            raise ProtocolError(msg.t, b"Message malformed: %s key is missing" % e.message)
+            raise ProtocolError(msg.t, b"Message malformed: %s key is missing" % e.args[0])
         except IndexError:
             raise ProtocolError(msg.t, b"Message malformed")
 
