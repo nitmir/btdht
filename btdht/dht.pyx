@@ -802,7 +802,10 @@ cdef class DHT_BASE:
                 except KeyError:
                     pass
             for key in to_delete:
-                del self.mytoken[id]
+                try:
+                    del self.mytoken[id]
+                except KeyError:
+                    pass
 
             # cleaning old peer for announce_peer
             to_delete = collections.defaultdict(list)
@@ -815,7 +818,10 @@ cdef class DHT_BASE:
                         pass
             for hash in to_delete:
                 for peer in to_delete[hash]:
-                    del self._peers[hash][peer]
+                    try:
+                        del self._peers[hash][peer]
+                    except KeyError:
+                        pass
                 if not self._peers[hash]:
                     del self._peers[hash]
 
@@ -829,7 +835,10 @@ cdef class DHT_BASE:
                         pass
             for hash in to_delete:
                 for peer in to_delete[hash]:
-                    del self._got_peers[hash][peer]
+                    try:
+                        del self._got_peers[hash][peer]
+                    except KeyError:
+                        pass
                 if not self._got_peers[hash]:
                     del self._got_peers[hash]
 
