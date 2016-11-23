@@ -42,51 +42,120 @@ from utils import ID, nbit, nflip, nset
 from .krcp cimport BMessage
 from .krcp import BError, ProtocolError, GenericError, ServerError, MethodUnknownError
 
+
 cdef class DHT_BASE:
     """
-    Attributes:
-      root (RoutingTable): the dht instance routing table
-      bind_port (int): udp port to which this dht instance is binded
-      bind_ip (str): ip addresse to which this dht instance is binded
-      myid (str): 160bits long (20 Bytes) id of the node running this
-        instance of the dht.
-      debuglvl (int): Level of verbosity
-      master (bool): A boolean value to disting a particular dht instance
-      threads (list of Thread): list of the threads of the dht instance
-      zombie (bool): True if dht is stopped but one thread or more remains
-        alive
+    The DHT base class
+
+    :param RoutingTable routing_table: An optional routing table, possibly shared between several
+        dht instances. If not specified, a new routing table is instanciated.
+    :param int bind_port: And optional udp port to use for the dht instance. If not specified, the
+        hosting system will choose an available port.
+    :param str bind_ip: The interface to listen to. The default is ``"0.0.0.0"``.
+    :param bytes id: An optional 160 bits long (20 Bytes) id. If not specified, a random one is
+        generated.
+    :param set ignored_ip: A set of ip address in dotted (``"1.2.3.4"``) notation to ignore.
+        The default is the empty set.
+    :param int debuglvl: Level of verbosity, default to ``0``.
+    :param str prefix: A prefix to use in logged messages. The default is ``""``.
+    :param int process_queue_size: Size of the queue of messages waiting to be processed by user
+        defines functions (on_`msg`_(query|response)). see the :meth:`register_message` method.
+        The default to ``500``.
+    :param list ignored_net: An list of ip networks in cidr notation (``"1.2.3.4/5"``) to ignore.
+        The default is the value of the attribute :attr:`ignored_net`.
+
+    Note:
+        try to use same ``id`` and ``bind_port`` over dht restart to increase
+        the probability to remain in other nodes routing table
+
     """
     cdef char _myid[20]
 
+    #: :class:`list` of default ignored ip networks
+    ignored_net = [
+        '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16',
+        '172.16.0.0/12', '192.0.0.0/24', '192.0.2.0/24', '192.168.0.0/16', '198.18.0.0/15',
+        '198.51.100.0/24', '203.0.113.0/24', '224.0.0.0/4', '240.0.0.0/4', '255.255.255.255/32'
+    ]
+    #: :class:`RoutingTable` the used instance of the routing table 
+    root = None
+    #: :class:`int` port the dht is binded to
+    bind_port = None
+    #: :class:`str` interface the dht is binded to
+    bind_ip = "0.0.0.0"
+    #: :class:`utils.ID` the dht instance id, 160bits long (20 Bytes)
+    myid = None
+    #: :class:`int` the dht instance verbosity level
+    debuglvl = 0
+    #: :class:`list` of the :class:`Thread<threading.Thread>` of the dht instance
+    threads = []
+    #: Map beetween transaction id and messages type (to be able to match responses)
+    transaction_type = {}
+    #: Token send with get_peers response. Map between ip addresses and a list of random token.
+    #: A new token by ip is genereted at most every 5 min, a single token is valid 10 min.
+    #: On reception of a announce_peer query from ip, the query is only accepted if we have a
+    #: valid token (generated less than 10min ago).
+    token = collections.defaultdict(list)
+    #: Tokens received on get_peers response. Map between ip addresses and received token from ip.
+    #: Needed to send announce_peer to that particular ip.
+    mytoken = {}
+    #: The current dht :class:`socket.Socket`
+    sock = None
+    #: the state (stoped ?) of the dht
+    stoped = True
+    #: last time we received any message
+    last_msg = 0
+    #: last time we receive a response to one of our messages
+    last_msg_rep = 0
+
+
+
+    #: Map torrent hash -> peer ip and port -> received time. hash, ip and port are from
+    #: announce_peer query messages. time is the time of the received message. We only keep the
+    #: 100 most recent (ip, port). A (ip, port) couple is kept max 30min 
+    _peers=collections.defaultdict(collections.OrderedDict)
+    #: Map torrent hash -> peer ip and port -> received time. hash, ip and port are from get_peers
+    #: response messages. time is the time of the received message. We keep the 1000 most recent
+    #: (ip, port). A (ip, port) couple is kept max 15min 
+    _got_peers=collections.defaultdict(collections.OrderedDict)
+    #: internal heap structure used to find the K closed nodes in the DHT from one id
+    _get_peer_loop_list = []
+    #: Map hash -> time. Pseudo lock structure to ensure we only run background process for
+    #: :meth:`get_peers` only once by hash
+    _get_peer_loop_lock = {}
+    #: same as previous but for :meth:`announce_peer`
+    _get_closest_loop_lock = {}
+    #: A queue of DHT messages to send to user defined function (on_`msg`_(query|response)).
+    #: See the :meth:`register_message` method.
+    _to_process = None
+    #: A set of messages name (e.g. ``b"find_node"``, ``b"ping"``, ``b"get_peers"``,
+    #: ``b"announce_peer"``) for which we call user defined functions.
+    #: See the :meth:`register_message` method.
+    _to_process_registered = set()
+    #: internal list of supposed alive threads
+    _threads = []
+    #: internal list of supposed zombie (asked to stop but still running) threads
+    _threads_zombie = []
+    #: last debug message, use to prevent duplicate messages over 5 seconds
+    _last_debug = ""
+    #: time of the lat debug message, use to prevent duplicate messages over 5 seconds
+    _last_debug_time = 0
+    #: number of received messages since the last time :meth:`socket_stats` was called
+    _socket_in = 0
+    #: number of sended messages since the last time :meth:`socket_stats` was called
+    _socket_out = 0
+    #: last time :meth:`socket_stats` was called
+    _last_socket_stats = 0
+    #: last time the long background cleaning was run
+    _long_clean = 0
+    #: heigth of the routing table (a binary tree) during the last run of :meth:`_routine`
+    _root_heigth = 0
+
+
     def __init__(self, routing_table=None, bind_port=None, bind_ip="0.0.0.0",
-      id=None, ignored_ip=[], debuglvl=0, prefix="", master=False, process_queue_size=500,
+      id=None, ignored_ip=[], debuglvl=0, prefix="", process_queue_size=500,
       ignored_net=None
     ):
-        """
-        Note:
-           try to use same `id` and `bind_port` over dht restart to increase
-           the probability to remain in other nodes buckets
-
-        Args:
-          routing_table (RoutingTable, optional): A routing table possibly
-            shared between several dht instance. By default a new one is
-            instanciated.
-          bind_port (int, optional): udp port to which bind this dht instance
-            default is to let the system choose an available port.
-          bind_ip (str, optional): default to "0.0.0.0".
-          id (str, optional): 160bits long (20 Bytes) id of the node running
-            this instance of the dht. Default is to choose a random id
-          ignored_ip (list of str, optional): a list of ip to ignore message from
-          debuglvl (int, optional): Level of verbosity, default to 0
-          master (bool, optional): A boolean value to disting a particular dht
-            instance among several other then subclassing. Unused. default to False
-          process_queue_size(int, optional): Size of the queue of messages waiting
-            to be processed by user function (on_`msg`_(query|response)). see
-            the `register_message` method. default to 500.
-          ignored_net (list of str, optional): a list of ip network in CIDR notation
-            to ignore. By default, the list contains all private ip networks.
-        """
-
         # checking the provided id or picking a random one
         if id is not None:
             if len(id) != 20:
@@ -98,56 +167,27 @@ cdef class DHT_BASE:
 
         # initialising the routing table
         self.root = RoutingTable() if routing_table is None else routing_table
-        # Map beetween transaction id and messages type (to be able to match responses)
-        self.transaction_type={}
-        # Token send on get_peers query reception
-        self.token=collections.defaultdict(list)
-        # Token received on get_peers response reception
-        self.mytoken={}
-        # Map between torrent hash on list of peers
-        self._peers=collections.defaultdict(collections.OrderedDict)
-        self._got_peers=collections.defaultdict(collections.OrderedDict)
-        self._get_peer_loop_list = []
-        self._get_peer_loop_lock = {}
-        self._get_closest_loop_lock = {}
         self._to_process = Queue.Queue(maxsize=process_queue_size)
-        self._to_process_registered = set()
 
         self.bind_port = bind_port
         self.bind_ip = bind_ip
 
-        self.sock = None
-
-        if ignored_net is None:
-            ignored_net = [
-                '10.0.0.0/8', '172.16.0.0/12','198.18.0.0/15',
-                '169.254.0.0/16', '192.168.0.0/16', '224.0.0.0/4', '100.64.0.0/10',
-                '0.0.0.0/8','127.0.0.0/8','192.0.2.0/24','198.51.100.0/24','203.0.113.0/24',
-                '192.0.0.0/29', '240.0.0.0/4', '255.255.255.255/32',
-            ]
         self.ignored_ip = ignored_ip
-        self.ignored_net = [netaddr.IPNetwork(net) for net in ignored_net]
+        if ignored_net is not None:
+            self.ignored_net = [netaddr.IPNetwork(net) for net in ignored_net]
+        else:
+            self.ignored_net = [netaddr.IPNetwork(net) for net in self.ignored_net]
         self.debuglvl = debuglvl
         self.prefix = prefix
 
-        self._threads=[]
-        self.threads = []
-
-        self.master = master
-        self.stoped = True
-        self._threads_zombie = []
-        self._last_debug = ""
-        self._last_debug_time = 0
-
 
     def save(self, filename=None, max_node=None):
-        """save the current list of nodes to `filename`.
+        """save the current list of nodes to ``filename``.
 
-        Args:
-          filename (str, optional): filename where the list of known node is saved.
-            default to dht_`id`.status
-          max_node (int, optional): maximun number of nodes to save. default is all
-            the routing table
+        :param str filename: An optional filename where to save the current list of nodes.
+            If not provided, the file ``"dht_`myid`.status`` is used.
+        :param int max_node: An optional integer to limit the number of saved nodes.
+            If not provided, all of the routing table nodes are saved.
         """
         nodes_nb = 0
         if filename is None:
@@ -164,13 +204,12 @@ cdef class DHT_BASE:
                                 return
 
     def load(self, filename=None, max_node=None):
-        """load a list of nodes from `filename`.
+        """load a list of nodes from ``filename``.
 
-        Args:
-          filename (str, optional): filename where the list of known node is load from.
-            default to dht_`id`.status
-          max_node (int, optional): maximun number of nodes to save. default is all
-            nodes in the file
+        :param str filename: An optional filename where to load the list of nodes.
+            If not provided, the file ``"dht_`myid`.status`` is used.
+        :param int max_node: An optional integer to limit the number of loaded nodes.
+            If not provided, all of the file nodes are loaded.
         """
         nodes_nb = 0
         if filename is None:
@@ -198,7 +237,15 @@ cdef class DHT_BASE:
             t.start()
 
     def stop(self):
-        """Stop the dht"""
+        """
+            Stop the dht:
+
+              * Set the attribute :attr:`stoped` to ``True`` and wait for threads to terminate
+              * Close the dht socket
+
+            :raises FailToStop: if there is still some alive threads after 30 secondes, with the
+                list of still alive threads as parameter.
+        """
         if self.stoped:
             self.debug(0, "Already stoped or soping in progress")
             return
@@ -215,7 +262,10 @@ cdef class DHT_BASE:
             else:
                 break
         if self._threads:
-            self.debug(0, "Unable to stop %s threads, giving up:\n%r" % (len(self._threads), self._threads))
+            self.debug(
+                0,
+                "Unable to stop %s threads, giving up:\n%r" % (len(self._threads), self._threads)
+            )
             self._threads_zombie.extend(self._threads)
             self._threads = []
 
@@ -223,37 +273,58 @@ cdef class DHT_BASE:
             try:self.sock.close()
             except: pass
 
+        if self._threads_zombie:
+            raise FailToStop(self._threads_zombie)
+
     @property
     def zombie(self):
+        """``True`` if dht is stopped but one thread or more remains alive, ``False`` otherwise"""
         return bool(self.stoped and [t for t in self._threads if t.is_alive()])
 
     def start(self):
-        """Start the threads of the dht"""
+        """
+            Start the dht:
+              * initialize some attributes
+              * register this instance of the dht in the routing table
+                (see :meth:`RoutingTable.register_dht`)
+              * initialize the dht socket (see :meth:init_socket)
+              * start the routing table if needed
+              * start 5 threads:
+                * for receiving messages (see :meth:`_recv_loop`)
+                * for sending messages (see :meth:`_send_loop`)
+                * for doing some routines (boostraping, cleaning, see :meth:`_routine`)
+                * for finding the closest peer from some ids (see :meth:`_get_peers_closest_loop`)
+                * for processing messages to send to user defined functions
+                  (see :meth:`_process_loop`)
+        """
         if not self.stoped:
             self.debug(0, "Already started")
             return
         if self.zombie:
             self.debug(0, "Zombie threads, unable de start")
             return self._threads_zombie
+
         self.root.register_dht(self)
 
+        self.stoped = False
+        self._root_heigth = 0
+        self._socket_in = 0
+        self._socket_out = 0
+        self._last_socket_stats = time.time()
+        self.last_msg = time.time()
+        self.last_msg_rep = time.time()
+        self._long_clean = time.time()
+
+        self.init_socket()
 
         if self.root.stoped:
             self.root.start()
-        self.root_heigth = 0
-        self.stoped = False
-        self.root.last_merge = 0
-        self.socket_in = 0
-        self.socket_out = 0
-        self.last_socket_stats = time.time()
-        self.last_msg = time.time()
-        self.last_msg_rep = time.time()
-        self.long_clean = time.time()
-        self.init_socket()
 
         self.threads = []
-        for f, name in [(self._recv_loop, 'recv'), (self._send_loop, 'send'), (self._routine, 'routine'),
-                          (self._get_peers_closest_loop, 'get_peers_closest'), (self._process_loop, 'process_msg')]:
+        for f, name in [
+            (self._recv_loop, 'recv'), (self._send_loop, 'send'), (self._routine, 'routine'),
+            (self._get_peers_closest_loop, 'get_peers_closest'), (self._process_loop, 'process_msg')
+        ]:
             t = Thread(target=f)
             t.setName("%s:%s" % (self.prefix, name))
             t.daemon = True
@@ -264,8 +335,9 @@ cdef class DHT_BASE:
     def is_alive(self):
         """Test if all threads of the dht are alive, stop the dht if one of the thread is dead
 
-        Returns:
-          True if all dht threads are alive, False otherwise and stop all threads
+        :return: ``True`` if all dht threads are alive, ``False`` otherwise and stop all remaining
+            threads.
+        :rtype: bool
         """
         if self.threads and reduce(lambda x,y: x and y, [t.is_alive() for t in self.threads]):
             return True
@@ -276,38 +348,41 @@ cdef class DHT_BASE:
             self.stop_bg()
             return False
 
-
     def debug(self, lvl, msg):
-        """to print `msg` if `lvl` > `debuglvl`
+        """
+        Print ``msg`` prefixed with :attr:`prefix` if ``lvl`` <= :attr:`debuglvl`
+
+        :param int lvl: The debug level of the message to print
+        :param str msg: The debug message to print
 
         Note:
-          duplicate messages are removed
-
-        Args:
-          lvl (int): minimal level for `debuglvl` to print `msg`
-          msg (str): message to print
+            duplicate messages are removed:
         """
-        if lvl <= self.debuglvl and (self._last_debug != msg or (time.time() - self._last_debug_time)>5):
+        if (
+            lvl <= self.debuglvl and 
+            (self._last_debug != msg or (time.time() - self._last_debug_time) > 5)
+        ):
             print(self.prefix + msg)
             self._last_debug = msg
             self._last_debug_time = time.time()
 
-    def socket_stats(self):
-        """Statistic on send/received messages
+    def _socket_stats(self):
+        """
+        Display some statistic on send/received messages
+
+        :return: A tuple (number of received messages, number of sended messages, periode of time)
+        :rtype: tuple
 
         Note:
             The counter are reset to 0 on each call
-
-        Returns:
-            The couple (number a received, number of sent) messages
         """
         now = time.time()
-        in_s = self.socket_in
-        self.socket_in = 0
-        out_s = self.socket_out
-        self.socket_out = 0
-        delta = now - self.last_socket_stats
-        self.last_socket_stats = now
+        in_s = self._socket_in
+        self._socket_in = 0
+        out_s = self._socket_out
+        self._socket_out = 0
+        delta = now - self._last_socket_stats
+        self._last_socket_stats = now
         return (in_s, out_s, delta)
 
     def init_socket(self):
@@ -316,6 +391,7 @@ cdef class DHT_BASE:
         if self.sock:
              try:self.sock.close()
              except: pass
+        # initialize the sending queue
         self._to_send = Queue.Queue()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         #self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -325,18 +401,20 @@ cdef class DHT_BASE:
             self.sock.bind((self.bind_ip, self.bind_port))
         else:
             self.sock.bind((self.bind_ip, 0))
+            # set :attr:`bind_port` to the port choosen by the system
             self.bind_port = self.sock.getsockname()[1]
 
-
     def sleep(self, t, fstop=None):
-        """Sleep for t seconds. If the dht is requested to be stop, run `fstop` and exit
+        """
+            Sleep for t seconds. If the dht is requested to be stop, run ``fstop()`` and exit
 
-        Note:
-            Dont use it in the main thread otherwise it can exit before child threads
+            :param float t: A time to sleep, in seconds
+            :param fstop: A callable with no arguments, called before exiting
 
-        Args:
-          fstop (callable, optional): A callable object taking no argument called on dht stop
-             during the sleep
+            Note:
+                Dont use it in the main thread otherwise it can exit before child threads.
+                Only use it in child threads
+
         """
         if t>0:
             t_int = int(t)
@@ -351,16 +429,16 @@ cdef class DHT_BASE:
 
 
     def announce_peer(self, info_hash, port, delay=0, block=True):
-        """Announce `info_hash` available on `port` to the K closest nodes from
-           `info_hash` found in the dht
+        """
+            Announce that the ``info_hash`` is available on ``port`` to the K closest nodes from
+            ``info_hash`` found in the whole dht.
 
-        Args:
-          info_hash (str): A 160bits (20 Bytes) long identifier to announce
-          port (int): tcp port on which `info_hash` if avaible on the current node
-          delay (int, optional): delay in second to wait before starting to look for
-            the K closest nodes into the dht. default ot 0
-          block (bool, optional): wait until the announce in done if True, return immediately
-            otherwise. default ot True.
+            :param bytes info_hash: A 160 bits (20 Bytes) long identifier to announce
+            :param int port: The tcp port of with ``info_hash`` if available
+            :param int delay: An optional delay in second to wait before starting to look for the K
+                closest nodes into the dht. The default is ``0``.
+            :param bool block: If ``True`` (the default) wait until the announce in done to the K
+                closest nodes. Otherwise, return immediately.
         """
         def callback(nodes):
             for node in nodes:
@@ -380,13 +458,25 @@ cdef class DHT_BASE:
             ts = time.time() + delay
             closest = self.get_closest_nodes(info_hash)
             typ = "closest"
-            heapq.heappush(self._get_peer_loop_list, (ts, info_hash, tried_nodes, closest, typ, callback, None))
+            heapq.heappush(
+                self._get_peer_loop_list,
+                (ts, info_hash, tried_nodes, closest, typ, callback, None)
+            )
             if block:
                 while info_hash in self._get_closest_loop_lock and not self.stoped:
                     self.sleep(0.1)
 
     def _add_peer(self, info_hash, ip, port):
-        """Store a peer after a  announce_peer query"""
+        """
+            Store a peer after a announce_peer query
+
+            :param bytes info_hash: A 160 bits (20 Bytes) long identifier the peer is offering
+            :param str ip: The ip address of the peer in dotted notation (``"1.2.3.4"``)
+            :param int port: The tcp port of the peer
+
+            Note:
+                The peer address is store 30 minutes
+        """
         if ip not in self.ignored_ip and not utils.ip_in_nets(ip, self.ignored_net):
             self._peers[info_hash][(ip,port)]=time.time()
             # we only keep at most 100 peers per hash
@@ -394,7 +484,16 @@ cdef class DHT_BASE:
                 self._peers[info_hash].popitem(False)
 
     def _add_peer_queried(self, info_hash, ip, port):
-        """Store a peer after a  announce_peer query"""
+        """
+            Store a peer after a get_peer response
+
+            :param bytes info_hash: A 160 bits (20 Bytes) long identifier the peer is offering
+            :param str ip: The ip address of the peer in dotted notation (``"1.2.3.4"``)
+            :param int port: The tcp port of the peer
+
+            Note:
+                The peer address is store 15 minutes
+        """
         if (
             port > 0 and
             ip not in self.ignored_ip and
@@ -406,23 +505,24 @@ cdef class DHT_BASE:
                 self._got_peers[info_hash].popitem(False)
 
     def get_peers(self, hash, delay=0, block=True, callback=None, limit=10):
-        """Return a list of at most 1000 (ip, port) downloading `hash` or pass-it to `callback`
+        """
+            Return a list of at most 1000 (ip, port) downloading ``hash`` or pass-it to ``callback``
 
-        Note:
-          if `block` is False, the returned list will be most likely empty on the first call
+            :param bytes hash: A 160bits (20 Bytes) long identifier to look for peers
+            :param float delay: A delay in second to wait before starting to look for the K closest
+                nodes into the dht. The default is ``0``
+            :param bool block: If ``True`` (the default) block until we get at least one peer,
+                otherwise, return immediately (with or without peers).
+            :param callback: An optional callable taking as argument a list of peers (ip, port).
+                Called once we found most of the peers store in the DHT.
+            :param int limit: The maximum number of peer to look for before stoping the search.
+                The default is 10, the max is 1000.
+            :return: A list of peers (ip, port) with the ip in dotted notation (``"1.2.3.4"``)
+            :rtype: list
 
-        Args:
-          hash (str): A 160bits (20 Bytes) long identifier to look for peers
-          delay (int, optional): delay in second to wait before starting to look for
-            the K closest nodes into the dht. default ot 0
-          block (bool, optional): wait until the announce in done if True, return immediately
-            otherwise. default ot True.
-          callback (callable, optional): A callable accepting a argument of type list of (str, int)
-            called then peers have been found.
-          limit (int, optional): max number of peer to look for before returning. default to 10.
-
-        Returns:
-            a list of (str, int) peers downloading `hash`
+            Note:
+                if ``block`` is False, the returned list will be most likely empty on the first call
+                subsequent call will return peers found so far.
         """
         peers = None
         if hash in self._got_peers and self._got_peers[hash] and len(self._got_peers[hash])>=limit:
@@ -537,7 +637,27 @@ cdef class DHT_BASE:
             self.sleep(tosleep, stop)
 
     def _get_peers(self, info_hash, compact=True, errno=0):
-        """Return peers store locally by remote announce_peer"""
+        """
+            Return peers store locally by remote announce_peer queries
+
+            :param bytes info_hash: A 160 bits (20 Bytes) long identifier for which we want to get
+                peers
+            :param bool compact: If ``True`` the peers addresses are returned in compact format
+                Otherwise, the peers addresses are tuple (ip, port) with ip in dotted notation
+                (``"1.2.3.4"``) and port an integer. The default is ``True``.
+            :return: A list of peers addresses
+            :rtype: list
+            :raises KeyError: if no peers for ``info_hash`` are store locally
+
+            Note:
+                If not peer are found for ``info_hash``, the function will retry for 2s before
+                raising a KeyError exception.
+
+                Contact information in for peers is encoded as a 6-byte string.
+                Also known as "Compact IP-address/port info" the 4-byte IP address
+                is in network byte order with the 2 byte port in network byte order
+                concatenated onto the end.
+        """
         if not info_hash in self._peers and compact:
             return None
         elif not info_hash in self._got_peers and not compact:
@@ -562,25 +682,26 @@ cdef class DHT_BASE:
                return self._get_peers(info_hash, compact, errno=errno+1)
 
     def get_closest_nodes(self, id, compact=False):
-        """return the current K closest nodes from `id`
+        """
+        return the current K closest nodes from ``id`` present in the routing table (K = 8)
+
+        :param bytes id:  A 160bits (20 Bytes) long identifier for which we want the closest nodes
+            in the routing table.
+        :param bool compact: If ``True`` the nodes infos are returned in compact format.
+            Otherwise, intances of :class:`Node` are returned. The default is ``False``.
+        :return: A list of :class:`Node` if ``compact`` is ``False``, a :class:`bytes` of size
+            multiple of 26 if ``compact`` is ``True``.
+        :rtype: :class:`list` if ``compact`` is ``False``, a :class:`bytes` otherwise.
 
         Note:
-          Contact information for peers is encoded as a 6-byte string.
-          Also known as "Compact IP-address/port info" the 4-byte IP address
-          is in network byte order with the 2 byte port in network byte order
-          concatenated onto the end.
-          Contact information for nodes is encoded as a 26-byte string.
-          Also known as "Compact node info" the 20-byte Node ID in network byte
-          order has the compact IP-address/port info concatenated to the end.
+            Contact information for peers is encoded as a 6-byte string.
+            Also known as "Compact IP-address/port info" the 4-byte IP address
+            is in network byte order with the 2 byte port in network byte order
+            concatenated onto the end.
 
-        Args:
-          id (str): A 160bits (20 Bytes) long identifier to look for closest nodes
-            in the routing table
-          compact (bool, optional): default to False
-
-        Returns:
-          A list of Compact node info if `compact` is True, a list of
-          `Node` instances otherwise.
+            Contact information for nodes is encoded as a 26-byte string.
+            Also known as "Compact node info" the 20-byte Node ID in network byte
+            order and the compact IP-address/port info concatenated to the end.
         """
         l = list(self.root.get_closest_nodes(id))
         if compact:
@@ -639,13 +760,20 @@ cdef class DHT_BASE:
                         (_,sockets,_) = select.select([], [self.sock], [], 1)
                         if sockets:
                             self.sock.sendto(msg, addr)
-                            self.socket_out+=1
+                            self._socket_out+=1
                             break
+                    except socket.gaierror:
+                        self.debug(0, "send:%r %r %r" % (e, addr, msg))
                     except socket.error as e:
-                        if e.errno in [90, 13]: # Message too long
+                        # 90: Message too long
+                        # 13: Permission denied
+                        if e.errno in [90, 13]:
                             self.debug(0, "send:%r %r %r" % (e, addr, msg))
-                            break
-                        if e.errno not in [11, 1]: # 11: Resource temporarily unavailable
+                        # 11: Resource temporarily unavailable, try again
+                        #  1: Operation not permitted
+                        elif e.errno in [11, 1]:
+                            pass
+                        else:
                             self.debug(0, "send:%r %r" % (e, addr) )
                             raise
             except Queue.Empty:
@@ -698,7 +826,7 @@ cdef class DHT_BASE:
                         # build the response object
                         reponse = obj.response(self)
 
-                        self.socket_in+=1
+                        self._socket_in+=1
                         self.last_msg = time.time()
 
                         # send it
@@ -708,7 +836,7 @@ cdef class DHT_BASE:
                         # process the response
                         self._process_response(obj, obj_opt)
 
-                        self.socket_in+=1
+                        self._socket_in+=1
                         self.last_msg = time.time()
                         self.last_msg_rep = time.time()
                     # on error
@@ -785,7 +913,7 @@ cdef class DHT_BASE:
         self.clean()
 
         # Long cleaning
-        if now - self.long_clean >= 15 * 60:
+        if now - self._long_clean >= 15 * 60:
             # cleaning old tokens
             to_delete = []
             for ip in self.token:
@@ -844,7 +972,7 @@ cdef class DHT_BASE:
 
             self.clean_long()
 
-            self.long_clean = now
+            self._long_clean = now
 
     def build_table(self):
         """Build the routing table by querying find_nodes on his own id"""
@@ -867,13 +995,13 @@ cdef class DHT_BASE:
             self._clean()
 
             # Searching its own id while the Routing table is growing
-            if self.root_heigth != self.root.heigth():
+            if self._root_heigth != self.root.heigth():
                 self.debug(1, "Fetching my own id")
                 if self.build_table():
-                    self.root_heigth += 1
+                    self._root_heigth += 1
 
             # displaying some stats
-            (in_s, out_s, delta) = self.socket_stats()
+            (in_s, out_s, delta) = self._socket_stats()
             if in_s <= 0 or self.debuglvl > 0:
                 (nodes, goods, bads) = self.root.stats()
                 if goods <= 0:
@@ -1098,6 +1226,9 @@ class BucketNotFull(Exception):
     pass
 
 class NoTokenError(Exception):
+    pass
+
+class FailToStop(Exception):
     pass
 
 cdef class Node:
@@ -1606,7 +1737,7 @@ class RoutingTable(object):
       zombie (bool): True if dht is stopped but one thread or more remains
         alive
     """
-    #__slot__ = ("trie", "_heigth", "split_ids", "info_hash", "last_merge", "lock", "_dhts", "stoped")
+    #__slot__ = ("trie", "_heigth", "split_ids", "info_hash", "lock", "_dhts", "stoped")
     def __init__(self, debuglvl=0):
         """
         Args:
@@ -1618,7 +1749,6 @@ class RoutingTable(object):
         self._heigth=1
         self.split_ids = set()
         self.info_hash = set()
-        #self.last_merge = 0
         self.lock = Lock()
         self._to_split = SplitQueue()
         self._dhts = set()
