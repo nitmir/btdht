@@ -572,7 +572,7 @@ cdef class BMessage:
                         with gil:
                             raise MethodUnknownError(self.t, b"Method %s Unknown" % self.q)
                 else:
-                    printf("not ping %d\n", 0)
+                    printf("no rpc method name %d\n", 0)
             else:
                 printf("not query %d\n", 1)
 

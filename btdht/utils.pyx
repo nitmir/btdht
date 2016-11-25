@@ -15,6 +15,14 @@ import sys
 import netaddr
 import binascii
 import six
+import socket
+import collections
+import time
+import select
+try:
+    import Queue
+except ImportError:
+    import queue as Queue
 from functools import total_ordering
 
 from libc.stdlib cimport atoi, malloc, free
@@ -420,3 +428,113 @@ def ip_in_nets(ip, nets):
         if ip in net:
             return True
     return False
+
+
+class PollableQueue(Queue.Queue):
+    def __init__(self, *args, **kwargs):
+        Queue.Queue.__init__(self, *args, **kwargs)
+        # Create a pair of connected sockets
+        if os.name == 'posix':
+            self._putsocket, self._getsocket = socket.socketpair()
+        else:
+            # Compatibility on non-POSIX systems
+            server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server.bind(('127.0.0.1', 0))
+            server.listen(1)
+            self._putsocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._putsocket.connect(server.getsockname())
+            self._getsocket, _ = server.accept()
+            server.close()
+        self._getsocket.setblocking(0)
+        self._putsocket.setblocking(0)
+        self.sock = self._getsocket
+
+    def _put(self, *args, **kwargs):
+        Queue.Queue._put(self, *args, **kwargs)
+        self._signal_put()
+
+    def _signal_put(self):
+        try:
+            self._putsocket.send(b'x')
+        except socket.error as error:
+            if error.errno != 11:  # Resource temporarily unavailable
+                raise
+
+    def _comsume_get(self):
+        try:
+            self._getsocket.recv(1)
+        except socket.error as error:
+            if error.errno != 11:  # Resource temporarily unavailable
+                raise
+
+    def _get(self, *args, **kwargs):
+        self._comsume_get()
+        return Queue.Queue._get(self, *args, **kwargs)
+
+
+class SplitQueue(PollableQueue):
+    def _init(self, maxsize):
+        self.queue = collections.OrderedDict()
+
+    def _put(self, item):
+        if not item[0] in self.queue:
+            self.queue[item[0]] = item[1:-1] + (set(),)
+            self._signal_put()
+        self.queue[item[0]][-1].add(item[-1])
+
+    def _get(self):
+        self._comsume_get()
+        (key, value) = self.queue.popitem(False)
+        return (key, ) + value
+
+
+def schedule(to_schedule):
+    """
+        Schedule the call of predefined iterator functions.
+
+        :param list to_schedule: A list of callable returning an iterator
+
+        Notes:
+            Iterators must behave as describe next. The first returned value must be an integer
+            describing the type of the iterator. 0 mean time bases and all subsequent yield must
+            return the next timestamp at which the iterator want to be called. 1 mean queue based.
+            The next call to the iterator must return an instance of :class:`PollableQueue`. All
+            subsequent yield value are then ignored. The queue based iterator will be called when
+            something is put on its queue.
+    """
+    time_based = {}
+    queue_based = {}
+    timers = {}
+    names = {}
+    for i, (name, function) in enumerate(to_schedule):
+        iterator = function()
+        names[iterator] = name
+        typ = iterator.next()
+        if typ == 0:
+            time_based[i] = iterator
+            timers[i] = 0
+        elif typ == 1:
+            queue = iterator.next()
+            queue_based[queue] = iterator
+        else:
+            raise RuntimeError("Unknown iterator type %s" % typ)
+    next_time = 0
+    queue_base_socket_map = dict((q.sock, i) for (q, i) in six.iteritems(queue_based))
+    queue_base_sockets = [q.sock for q in queue_based.keys()]
+    try:
+        while True:
+            now = time.time()
+            wait = max(0, next_time - now)
+            (sockets, _, _) = select.select(queue_base_sockets, [], [], wait)
+            now = time.time()
+            if now >= next_time:
+                for i, iterator in six.iteritems(time_based):
+                    if now >= timers[i]:
+                        timers[i] = iterator.next()
+                next_time = min(timers.values())
+            for sock in sockets:
+                iterator = queue_base_socket_map[sock]
+                iterator.next()
+    except StopIteration as error:
+        print("Iterator %s stopped" % names[iterator])
+        raise

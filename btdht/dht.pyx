@@ -18,10 +18,6 @@ import IN
 import sys
 import time
 import six
-try:
-    import Queue
-except ImportError:
-    import queue as Queue
 import heapq
 import traceback
 import struct
@@ -30,6 +26,10 @@ import select
 import collections
 import netaddr
 import binascii
+try:
+    import Queue
+except ImportError:
+    import queue as Queue
 from functools import total_ordering, reduce
 from threading import Thread, Lock
 from random import shuffle
@@ -37,7 +37,7 @@ from random import shuffle
 import datrie
 
 import utils
-from utils import ID, nbit, nflip, nset
+from utils import ID, nbit, nflip, nset, SplitQueue, PollableQueue
 
 from .krcp cimport BMessage
 from .krcp import BError, ProtocolError, GenericError, ServerError, MethodUnknownError
@@ -77,6 +77,10 @@ cdef class DHT_BASE:
         '172.16.0.0/12', '192.0.0.0/24', '192.0.2.0/24', '192.168.0.0/16', '198.18.0.0/15',
         '198.51.100.0/24', '203.0.113.0/24', '224.0.0.0/4', '240.0.0.0/4', '255.255.255.255/32'
     ]
+    #: :class:`str` prefixing all debug message
+    prefix = ""
+    #: :class:`set` of ignored ip in dotted notation
+    ignored_ip = []
     #: :class:`RoutingTable` the used instance of the routing table 
     root = None
     #: :class:`int` port the dht is binded to
@@ -101,12 +105,17 @@ cdef class DHT_BASE:
     mytoken = {}
     #: The current dht :class:`socket.Socket`
     sock = None
+    #: A :class:`PollableQueue` of messages (data, (ip, port)) to send
+    to_send = PollableQueue()
     #: the state (stoped ?) of the dht
     stoped = True
     #: last time we received any message
     last_msg = 0
     #: last time we receive a response to one of our messages
     last_msg_rep = 0
+    #: A list of looping iterator to schedule. Calling :meth:`schedule` will do a scheduling for
+    #: 1 DHT instance
+    to_schedule = []
 
 
 
@@ -167,7 +176,7 @@ cdef class DHT_BASE:
 
         # initialising the routing table
         self.root = RoutingTable() if routing_table is None else routing_table
-        self._to_process = Queue.Queue(maxsize=process_queue_size)
+        self._to_process = PollableQueue(maxsize=process_queue_size)
 
         self.bind_port = bind_port
         self.bind_ip = bind_ip
@@ -180,6 +189,37 @@ cdef class DHT_BASE:
         self.debuglvl = debuglvl
         self.prefix = prefix
 
+        self.threads = []
+        self.transaction_type = {}
+        self.token = collections.defaultdict(list)
+        self.mytoken = {}
+        self.stoped = True
+        self.last_msg = 0
+        self.last_msg_rep = 0
+
+        self._peers=collections.defaultdict(collections.OrderedDict)
+        self._got_peers=collections.defaultdict(collections.OrderedDict)
+        self._get_peer_loop_list = []
+        self._get_peer_loop_lock = {}
+        self._get_closest_loop_lock = {}
+        self._to_process_registered = set()
+        self._threads = []
+        self._threads_zombie = []
+        self._last_debug = ""
+        self._last_debug_time = 0
+        self._socket_in = 0
+        self._socket_out = 0
+        self._last_socket_stats = 0
+        self._long_clean = 0
+        self._root_heigth = 0
+
+        self.to_schedule = [
+            ("%sroutine" % self.prefix, self._routine),
+            ("%sget_peers_closest_loop" % self.prefix, self._get_peers_closest_loop),
+            ("%sprocess_loop" % self.prefix, self._process_loop)
+        ]
+
+        self.root.register_dht(self)
 
     def save(self, filename=None, max_node=None):
         """save the current list of nodes to ``filename``.
@@ -281,21 +321,23 @@ cdef class DHT_BASE:
         """``True`` if dht is stopped but one thread or more remains alive, ``False`` otherwise"""
         return bool(self.stoped and [t for t in self._threads if t.is_alive()])
 
-    def start(self):
+    def start(self, start_routing_table=True):
         """
             Start the dht:
-              * initialize some attributes
-              * register this instance of the dht in the routing table
-                (see :meth:`RoutingTable.register_dht`)
-              * initialize the dht socket (see :meth:init_socket)
-              * start the routing table if needed
-              * start 5 threads:
-                * for receiving messages (see :meth:`_recv_loop`)
-                * for sending messages (see :meth:`_send_loop`)
-                * for doing some routines (boostraping, cleaning, see :meth:`_routine`)
-                * for finding the closest peer from some ids (see :meth:`_get_peers_closest_loop`)
-                * for processing messages to send to user defined functions
-                  (see :meth:`_process_loop`)
+                * initialize some attributes
+                * register this instance of the dht in the routing table
+                  (see :meth:`RoutingTable.register_dht`)
+                * initialize the dht socket (see :meth:init_socket)
+                * start the routing table if needed and ``start_routing_table` is ``True``
+
+            :param bool start_routing_table: If ``True`` (the default) also start the routing table
+                if needed
+
+            Notes:
+                The routing table needs to be started in last after all possible DHT using it.
+                As per default only one DHT use the routing table, the default is to start it
+                automatically immediatly after the DHT is started. ``start_routing_table`` allow
+                to diable this automatic start.
         """
         if not self.stoped:
             self.debug(0, "Already started")
@@ -303,8 +345,6 @@ cdef class DHT_BASE:
         if self.zombie:
             self.debug(0, "Zombie threads, unable de start")
             return self._threads_zombie
-
-        self.root.register_dht(self)
 
         self.stoped = False
         self._root_heigth = 0
@@ -317,20 +357,8 @@ cdef class DHT_BASE:
 
         self.init_socket()
 
-        if self.root.stoped:
+        if start_routing_table and self.root.stoped:
             self.root.start()
-
-        self.threads = []
-        for f, name in [
-            (self._recv_loop, 'recv'), (self._send_loop, 'send'), (self._routine, 'routine'),
-            (self._get_peers_closest_loop, 'get_peers_closest'), (self._process_loop, 'process_msg')
-        ]:
-            t = Thread(target=f)
-            t.setName("%s:%s" % (self.prefix, name))
-            t.daemon = True
-            t.start()
-            self._threads.append(t)
-            self.threads.append(t)
 
     def is_alive(self):
         """Test if all threads of the dht are alive, stop the dht if one of the thread is dead
@@ -392,7 +420,7 @@ cdef class DHT_BASE:
              try:self.sock.close()
              except: pass
         # initialize the sending queue
-        self._to_send = Queue.Queue()
+        self.to_send = PollableQueue()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         #self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.setsockopt(socket.IPPROTO_IP, IN.IP_MTU_DISCOVER, IN.IP_PMTUDISC_DO)
@@ -556,6 +584,7 @@ cdef class DHT_BASE:
             return peers
 
     def _get_peers_closest_loop(self):
+        yield 0
         """Function run by the thread exploring the DHT"""
         def on_stop(hash, typ):
             self.root.release_torrent(hash)
@@ -634,7 +663,8 @@ cdef class DHT_BASE:
                     break
                 del tried_nodes
                 del closest
-            self.sleep(tosleep, stop)
+            yield (time.time() + tosleep)
+            #self.sleep(tosleep, stop)
 
     def _get_peers(self, info_hash, compact=True, errno=0):
         """
@@ -746,39 +776,6 @@ cdef class DHT_BASE:
         else:
             self.debug(2, "obj of type %r" % obj.y)
 
-    def _send_loop(self):
-        """function lauch by the thread sending the udp msg"""
-        while True:
-            if self.stoped:
-                return
-            try:
-                (msg, addr) = self._to_send.get(timeout=1)
-                while True:
-                    if self.stoped:
-                        return
-                    try:
-                        (_,sockets,_) = select.select([], [self.sock], [], 1)
-                        if sockets:
-                            self.sock.sendto(msg, addr)
-                            self._socket_out+=1
-                            break
-                    except socket.gaierror:
-                        self.debug(0, "send:%r %r %r" % (e, addr, msg))
-                    except socket.error as e:
-                        # 90: Message too long
-                        # 13: Permission denied
-                        if e.errno in [90, 13]:
-                            self.debug(0, "send:%r %r %r" % (e, addr, msg))
-                        # 11: Resource temporarily unavailable, try again
-                        #  1: Operation not permitted
-                        elif e.errno in [11, 1]:
-                            pass
-                        else:
-                            self.debug(0, "send:%r %r" % (e, addr) )
-                            raise
-            except Queue.Empty:
-                pass
-
     def sendto(self, msg, addr):
         """program a msg to be send over the network
 
@@ -786,75 +783,130 @@ cdef class DHT_BASE:
            msg (str): message to be send to
            addr (tuple of str, port): address to send to
         """
-        self._to_send.put((msg, addr))
+        self.to_send.put((msg, addr))
 
-    def _recv_loop(self):
+    def _socket_loop(self):
         """function lauch by the thread receiving the udp messages from the DHT"""
         while True:
             if self.stoped:
                 return
             try:
-                (sockets,_,_) = select.select([self.sock], [], [], 1)
+                (sockets_read, sockets_write, _) = select.select(
+                    [self.sock, self.to_send.sock],
+                    [] if self.to_send.empty() else [self.sock],
+                    [],
+                    0.1
+                )
             except socket.error as e:
                 self.debug(0, "recv:%r" %e )
                 raise
 
-            if sockets:
+            for sock in sockets_read:
+                if sock == self.sock:
+                    self._process_incoming_message()
+                elif sock == self.to_send.sock and sockets_write:
+                    self._process_outgoing_message()
+
+
+    def _process_outgoing_message(self):
+        """
+            Process a new outgoing message. The message is retrieved from the queue :attr:`to_send`
+            and send to :attr:`sock`. So the method should only be called then there is a message
+            in the send queue and then :attr:`sock` is ready for a write.
+        """
+        try:
+            (msg, addr) = self.to_send.get_nowait()
+            try:
+                self.sock.sendto(msg, addr)
+                self._socket_out+=1
+            except socket.gaierror as e:
+                self.debug(0, "send:%r %r %r" % (e, addr, msg))
+            except socket.error as e:
+                # 90: Message too long
+                # 13: Permission denied
+                if e.errno in [90, 13]:
+                    self.debug(0, "send:%r %r %r" % (e, addr, msg))
+                # 11: Resource temporarily unavailable, try again
+                #  1: Operation not permitted
+                elif e.errno in [11, 1]:
+                    pass
+                else:
+                    self.debug(0, "send:%r %r" % (e, addr) )
+                    raise
+        except Queue.Empty:
+            pass
+
+    def _process_incoming_message(self):
+        """
+            Process a new incoming message. The message is read from :attr:`sock`, so this
+            method should only be called when :attr:`sock` is ready for a read.
+
+        """
+        try:
+            data, addr = self.sock.recvfrom(4048)
+            if addr[0] in self.ignored_ip:
+                return
+            elif utils.ip_in_nets(addr[0], self.ignored_net):
+                return
+            elif addr[1] < 1 or addr[1] > 65535:
+                self.debug(1, "Port should be whithin 1 and 65535, not %s" % addr[1])
+                return
+            elif len(data) < 20:
+                return
+            else:
+                # Building python object from bencoded data
+                obj, obj_opt = self._decode(data, addr)
+                # Update sender node in routing table
                 try:
-                    data, addr = self.sock.recvfrom(4048)
-                    if addr[0] in self.ignored_ip:
-                        continue
-                    if utils.ip_in_nets(addr[0], self.ignored_net):
-                        continue
-                    if addr[1] < 1 or addr[1] > 65535:
-                        self.debug(1, "Port should be whithin 1 and 65535, not %s" % addr[1])
-                        continue
-                    if len(data) < 20:
-                        continue
-                    # Building python object from bencoded data
-                    obj, obj_opt = self._decode(data, addr)
-                    # Update sender node in routing table
+                    self._update_node(obj)
+                except TypeError:
+                    print("TypeError: %r in _recv_loop" % obj)
+                    raise
+                # On query
+                if obj.y == b"q":
+                    # process the query
+                    self._process_query(obj)
+                    # build the response object
+                    reponse = obj.response(self)
+
+                    self._socket_in+=1
+                    self.last_msg = time.time()
+
+                    # send it
+                    self.sendto(reponse.encode(), addr)
+                # on response
+                elif obj.y == b"r":
+                    # process the response
                     try:
-                        self._update_node(obj)
-                    except TypeError:
-                        print("TypeError: %r in _recv_loop" % obj)
-                        raise
-                    # On query
-                    if obj.y == b"q":
-                        # process the query
-                        self._process_query(obj)
-                        # build the response object
-                        reponse = obj.response(self)
-
-                        self._socket_in+=1
-                        self.last_msg = time.time()
-
-                        # send it
-                        self.sendto(reponse.encode(), addr)
-                    # on response
-                    elif obj.y == b"r":
-                        # process the response
                         self._process_response(obj, obj_opt)
+                    except ValueError as error:
+                        raise ProtocolError(obj.t, error.args[0])
 
-                        self._socket_in+=1
-                        self.last_msg = time.time()
-                        self.last_msg_rep = time.time()
-                    # on error
-                    elif obj.y == b"e":
-                        # process it
-                        self.on_error(obj, obj_opt)
+                    self._socket_in+=1
+                    self.last_msg = time.time()
+                    self.last_msg_rep = time.time()
+                # on error
+                elif obj.y == b"e":
+                    # process it
+                    self._process_error(obj, obj_opt)
+        # if we raised a BError, send it
+        except (BError,) as error:
+            if self.debuglvl > 1:
+                traceback.print_exc()
+                self.debug(2, "error %r" % error)
+            self.sendto(error.encode(), addr)
+        # socket unavailable ?
+        except socket.error as e:
+            if e.errno not in [11, 1]: # 11: Resource temporarily unavailable
+                self.debug(0, "send:%r : (%r, %r)" % (e, data, addr))
+                raise
+        except ValueError as e:
+            #if self.debuglvl > 0:
+            #    traceback.print_exc()
+            #    self.debug(1, "%s for %r" % (e, addr))
+            traceback.print_exc()
+            #self.debug(-100, e.args[0])
 
-                # if we raised a BError, send it
-                except (BError,) as error:
-                    if self.debuglvl > 1:
-                        traceback.print_exc()
-                        self.debug(2, "error %r" % error)
-                    self.sendto(error.encode(), addr)
-                # socket unavailable ?
-                except socket.error as e:
-                    if e.errno not in [11, 1]: # 11: Resource temporarily unavailable
-                        self.debug(0, "send:%r : (%r, %r)" % (e, data, addr))
-                        raise
 
 
     cdef void _set_transaction_id(self, BMessage query, int id_len=6):
@@ -983,11 +1035,13 @@ cdef class DHT_BASE:
 
     def _routine(self):
         """function lauch by the thread performing some routine (boostraping, building the routing table, cleaning) on the DHT"""
+        yield 0
         next_routine = time.time() + 15
         while True:
             if self.stoped:
                 return
-            self.sleep(next_routine - time.time())
+            #self.sleep(next_routine - time.time())
+            yield next_routine
             now = time.time()
             next_routine = now + 15
 
@@ -1136,6 +1190,12 @@ cdef class DHT_BASE:
         except KeyError as e:
             raise ProtocolError(query.t, b"Message malformed: %s key is missing" % e.args[0])
 
+    def _process_error(self, obj, query):
+        if "error" in self._to_process_registered:
+            try:
+                self._to_process.put_nowait((query, obj))
+            except Queue.Full:
+                self.debug(0, "Unable to queue msg to be processed, QueueFull")
 
     def _process_response(self, obj, query):
         if query.q in [b"find_node", b"ping", b"get_peers", b"announce_peer"]:
@@ -1159,17 +1219,22 @@ cdef class DHT_BASE:
 
     def _process_loop(self):
         """function lauch by the thread processing messages"""
+        yield 1
+        yield self._to_process
         while True:
             if self.stoped:
                 return
             try:
-                (query, response) = self._to_process.get(timeout=1)
+                (query, response) = self._to_process.get_nowait()
                 if response is None:
                     getattr(self, 'on_%s_query' % query.q.decode())(query)
+                elif response.y == b"e":
+                    self.on_error(response, query)
                 else:
                     getattr(self, 'on_%s_response' % query.q.decode())(query, response)
             except Queue.Empty:
                 pass
+            yield
 
     def _decode(self, s, addr):
         """decode a message"""
@@ -1718,17 +1783,6 @@ class DHT(DHT_BASE):
 class NotFound(Exception):
     pass
 
-class SplitQueue(Queue.Queue):
-    def _init(self, maxsize):
-        self.queue = collections.OrderedDict()
-    def _put(self, item):
-        if not item[0] in self.queue:
-            self.queue[item[0]] = item[1:-1] + (set(),)
-        self.queue[item[0]][-1].add(item[-1])
-    def _get(self):
-        (key, value) = self.queue.popitem(False)
-        return (key, ) + value
-
 class RoutingTable(object):
     """
     Attributs:
@@ -1750,7 +1804,6 @@ class RoutingTable(object):
         self.split_ids = set()
         self.info_hash = set()
         self.lock = Lock()
-        self._to_split = SplitQueue()
         self._dhts = set()
         self.stoped = True
         self.need_merge = False
@@ -1760,6 +1813,10 @@ class RoutingTable(object):
         self._threads_zombie= []
         self._last_debug = ""
         self._last_debug_time = 0
+        self.to_schedule = [
+            ("RT:merge_loop", self._merge_loop),
+            ("RT:routine", self._routine),
+        ]
 
     def stop_bg(self):
         """stop the routing table and return immediately"""
@@ -1792,7 +1849,7 @@ class RoutingTable(object):
     def zombie(self):
         return self.stoped and [t for t in self._threads if t.is_alive()]
 
-    def start(self):
+    def start(self, **kwargs):
         """start the routing table"""
         with self.lock:
             if not self.stoped:
@@ -1803,14 +1860,29 @@ class RoutingTable(object):
                 return self._threads_zombie
             self.stoped = False
 
+        # Le the routing table schedule the DHT iterators
+        to_schedule = []
+        to_schedule.extend(self.to_schedule)
+        for dht in self._dhts:
+            if dht.stoped is True:
+                raise RuntimeError(
+                    "Try to start the routing table before once of its DHT instances"
+                )
+            to_schedule.extend(dht.to_schedule)
+
         self.threads = []
-        for f in [self._merge_loop, self._routine, self._split_loop]:
-            t = Thread(target=f)
-            t.setName("RT:%s" % f.__func__.__name__)
-            t.daemon = True
-            t.start()
-            self._threads.append(t)
-            self.threads.append(t)
+        t = Thread(target=utils.schedule, args=(to_schedule,))
+        t.setName("RT:scheduler")
+        t.daemon = True
+        t.start()
+        self._threads.append(t)
+        self.threads.append(t)
+        t = Thread(target=self._dhts_send_loop)
+        t.setName("RT:dhts_send_loop")
+        t.daemon = True
+        t.start()
+        self._threads.append(t)
+        self.threads.append(t)
 
     def is_alive(self):
         """return True if all routing table threads are alive. Otherwire return False
@@ -1850,24 +1922,32 @@ class RoutingTable(object):
             pass
 
     def _merge_loop(self):
+        yield 0
         next_merge = 0
         # at most one full merge every 10 minutes
         next_full_merge = time.time() + 10 * 60
         while True:
-            self.sleep(max(next_merge - time.time(), 1))
+            #self.sleep(max(next_merge - time.time(), 1))
+            if self.stoped:
+                return
+            yield max(next_merge, time.time() + 1)
             if self._to_merge:
                 stack = []
                 while self._to_merge:
                     stack.append(self._to_merge.pop())
                 next_merge = time.time() + 60
                 self.debug(1, "Merging %s buckets" % (len(stack),))
-                self._merge(stack)
+                # execute merge partially and return regulary hand to the scheduler
+                for i in self._merge(stack):
+                    yield i
 
             if self.need_merge and time.time() > next_full_merge:
                 self.need_merge = False
                 next_merge = time.time() + 60
                 next_full_merge = time.time() + 10 * 60
-                self._merge()
+                # execute merge partially and return regulary hand to the scheduler
+                for i in self._merge():
+                    yield i
 
     def register_torrent_longterm(self, id):
         """Same as register_torrent but garanty that the torrent wont
@@ -1891,8 +1971,13 @@ class RoutingTable(object):
           on start, dht automaticaly register itself to its
           routing table
         """
+        if dht.stoped is False:
+            RuntimeError(
+                "DHT instance must be registered on the routing table before the start "
+                "of the routing table"
+            )
         self._dhts.add(dht)
-        self.split_ids.add(dht.myid)
+        self.split_ids.add(dht.myid.value)
 
     def release_dht(self, dht):
         """release a `dht` instance to the routing table
@@ -1901,8 +1986,10 @@ class RoutingTable(object):
           on stop, dht automatially release itself from the
           routing table
         """
-        try: self._dhts.remove(dht)
-        except KeyError:pass
+        try:
+            self._dhts.remove(dht)
+        except KeyError:
+            pass
         try:
             self.split_ids.remove(dht.myid)
             if not self.need_merge:
@@ -1934,14 +2021,19 @@ class RoutingTable(object):
             self._last_debug_time = time.time()
 
     def _routine(self):
-        last_explore_tree = 0
+        yield 0
+        last_explore_tree = time.time()
         while True:
             #self.clean()
             # exploring the routing table
-            self.sleep(60 - (time.time() - last_explore_tree))
+            if self.stoped:
+                return
+            yield (last_explore_tree + 60)
+            #self.sleep(60 - (time.time() - last_explore_tree))
             dhts = list(self._dhts)
             shuffle(dhts)
             now = time.time()
+            i = 0
             for key, bucket in self.trie.items():
                 if self.stoped:
                     return
@@ -1954,6 +2046,7 @@ class RoutingTable(object):
                     nodes = self.get_closest_nodes(id)
                     if nodes and dhts:
                         nodes[0].find_node(dhts[0], id)
+                        i += 1
                     del nodes
                 # If questionnable nodes, ping one of them
                 questionable = [node for node in bucket if not node.good and not node.bad]
@@ -1962,34 +2055,14 @@ class RoutingTable(object):
                     if not questionable:
                         break
                     questionable.pop().ping(dht)
+                    i+=1
                 del questionable
 
+                # give back the main in case of very big routing table to the scheduler
+                if i > 1000:
+                    yield 0
+
             last_explore_tree = time.time()
-
-    def _split_loop(self):
-        while True:
-            if self.stoped:
-                return
-            try:
-                (bucket, dht, callbacks) = self._to_split.get(timeout=1)
-                self._split(dht, bucket, callbacks)
-            except Queue.Empty:
-                pass
-
-    def split(self, dht, bucket, callback=None):
-        """request for a bucket identified by `id` to be split
-
-        Notes:
-          the routing table cover the entire 160bits space
-
-        Args:
-          dht (DHT_BASE): a dht instance
-          bucket (Bucket): a bucket in the routing table to split
-          callback (tuple): first element must be callable and further element
-            arguments to pass to the callable.
-        """
-        self._to_split.put((bucket, dht, callback))
-
 
     def empty(self):
         """Remove all subtree"""
@@ -2084,7 +2157,8 @@ class RoutingTable(object):
             if b.id_length < 160:
                 for id in self.split_ids | self.info_hash:
                     if b.own(id):
-                        self.split(dht, b, callback=(self.add, (dht, node)))
+                        self.split(dht, b)
+                        self.add(dht, node)
                         return
             else:
                 print("%r" % b)
@@ -2093,17 +2167,17 @@ class RoutingTable(object):
         """height of the tree of the routing table"""
         return self._heigth
 
-    def _split(self, dht, bucket, callbacks=None):
+    def split(self, dht, bucket):
+        """request for a bucket identified by `id` to be split
+
+        Notes:
+          the routing table cover the entire 160bits space
+
+        Args:
+          dht (DHT_BASE): a dht instance
+          bucket (Bucket): a bucket in the routing table to split
+        """
         try:
-            #try:
-            #    prefix = self.trie.longest_prefix(utils.id_to_longid(str(bucket.id)))
-            #except KeyError:
-            #    if u"" in self.trie:
-            #        prefix = u""
-            #    else:
-            #        return
-            #print prefix
-            #print utils.id_to_longid(str(bucket.id))[:bucket.id_length]
             prefix = utils.id_to_longid(bucket.id)[:bucket.id_length]
             (zero_b, one_b) = self.trie[prefix].split(self, dht)
             (zero_b, one_b) = self.trie[prefix].split(self, dht)
@@ -2115,10 +2189,6 @@ class RoutingTable(object):
             self.debug(2, "trie changed while splitting")
         except BucketNotFull as e:
             self.debug(1, "%r" % e)
-        if callbacks:
-            for callback in callbacks:
-                callback[0](*callback[1])
-
 
     def merge(self):
         """Request a merge to be perform"""
@@ -2136,6 +2206,8 @@ class RoutingTable(object):
                 self.debug(1, "Less than 1000 nodes, no merge")
                 return
             started = time.time()
+        i = 0
+        j = 0
         while stack:
             if self.stoped:
                 return
@@ -2147,8 +2219,11 @@ class RoutingTable(object):
                 if utils.id_to_longid(id).startswith(key[:-1]):
                     to_merge = False
                     break
+            j += 1
+            # give back control to the scheduler every 100,000 keys
+            if j >= 100000:
+                yield 0
             if to_merge:
-                #with self.lock:
                 try:
                     if key not in self.trie:
                         self.debug(2, "%s gone away while merging" % key)
@@ -2168,9 +2243,45 @@ class RoutingTable(object):
                 except KeyError:
                     self.debug(0, "trie changed while merging")
 
+                i += 1
+                # give back control to the scheduler every 1000 buckets merged
+                if i >= 1000:
+                    yield 0
+
         if full_merge:
             self._heigth = max(len(k) for k in self.trie.keys()) + 1
             self.debug(1, "%s nodes merged in %ss" % (nodes_before - self.stats()[0], int(time.time() - started)))
 
-
+    def _dhts_send_loop(self):
+        sockets = {}
+        to_send_sockets = {}
+        for dht in self._dhts:
+            sockets[dht.sock] = dht
+            to_send_sockets[dht.to_send.sock] = dht
+        read_sockets = [s for s in sockets] + [s for s in to_send_sockets]
+        def write_sockets():
+            return [s for (s, dht) in six.iteritems(sockets) if not dht.to_send.empty()]
+        while True:
+            if self.stoped:
+                return
+            try:
+                (sockets_read, sockets_write, _) = select.select(
+                    read_sockets, write_sockets(), [], 0.1
+                )
+            except socket.error as e:
+                self.debug(0, "recv:%r" %e )
+                raise
+            sockets_write = set(sockets_write)
+            for sock in sockets_read:
+                if sock in sockets:
+                    dht = sockets[sock]
+                    if dht.stoped:
+                        return
+                    dht._process_incoming_message()
+                else:
+                    dht = to_send_sockets[sock]
+                    if dht.stoped:
+                        return
+                    if dht.sock in sockets_write:
+                        dht._process_outgoing_message()
 
