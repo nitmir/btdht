@@ -40,7 +40,8 @@ import utils
 from utils import ID, nbit, nflip, nset, SplitQueue, PollableQueue
 
 from .krcp cimport BMessage
-from .krcp import BError, ProtocolError, GenericError, ServerError, MethodUnknownError
+from .krcp import BError, ProtocolError, GenericError, ServerError, MethodUnknownError, MissingT
+from .krcp import DecodeError
 
 
 cdef class DHT_BASE:
@@ -900,6 +901,12 @@ cdef class DHT_BASE:
             if e.errno not in [11, 1]: # 11: Resource temporarily unavailable
                 self.debug(0, "send:%r : (%r, %r)" % (e, data, addr))
                 raise
+        except MissingT:
+            pass
+        except DecodeError:
+            pass
+        except TransactionIdUnknown:
+            pass
         except ValueError as e:
             #if self.debuglvl > 0:
             #    traceback.print_exc()
@@ -1238,14 +1245,8 @@ cdef class DHT_BASE:
 
     def _decode(self, s, addr):
         """decode a message"""
-        try:
-            msg = BMessage(addr=addr, debug=self.debuglvl)
-            msg.decode(s, len(s))
-        except ValueError as e:
-            if self.debuglvl > 0:
-                traceback.print_exc()
-                self.debug(1, "%s for %r" % (e, addr))
-            raise ProtocolError(b"")
+        msg = BMessage(addr=addr, debug=self.debuglvl)
+        msg.decode(s, len(s))
         try:
             if msg.y == b"q":
                 return msg, None
@@ -1255,7 +1256,7 @@ cdef class DHT_BASE:
                     query = self.transaction_type[msg.t][2]
                     return msg, query
                 else:
-                    raise GenericError(msg.t, b"transaction id unknown")
+                    raise TransactionIdUnknown(msg.t)
             elif msg.y == b"e":
                 query = self.transaction_type.get(msg.t, (None, None, None))[2]
                 if msg.errno == 201:
@@ -1276,8 +1277,7 @@ cdef class DHT_BASE:
                     self.debug(3, "ERROR:%s:%s pour %r" % (msg.errno, msg.errmsg, self.transaction_type.get(msg.t, {})))
                     raise MethodUnknownError(msg.t, b"Error code %s unknown" % msg.errno)
             else:
-                self.debug(0, "UNKNOWN MSG: %s" % msg)
-                raise ProtocolError(msg.t)
+                raise ValueError("UNKNOWN MSG: %r decoded as %r from %r" % (s, msg, addr))
         except KeyError as e:
             raise ProtocolError(msg.t, b"Message malformed: %s key is missing" % e.args[0])
         except IndexError:
@@ -1294,6 +1294,9 @@ class NoTokenError(Exception):
     pass
 
 class FailToStop(Exception):
+    pass
+
+class TransactionIdUnknown(Exception):
     pass
 
 cdef class Node:
@@ -1453,7 +1456,7 @@ cdef class Node:
         nodes = []
         length = len(infos)
         if length//26*26 != length:
-            raise ProtocolError(b"", b"nodes length should be a multiple of 26")
+            raise ValueError(b"nodes length should be a multiple of 26")
         i=0
         while i < length:
             if infos[i+20:i+24] != b'\0\0\0\0' and infos[i+24:i+26] != b'\0\0':

@@ -78,17 +78,17 @@ cdef int _decode_pass_list(char* data, int *i, int max) nogil except -1:
     cdef long long ll[0]
     if i[0] >= max + 1:
         with gil:
-            raise ValueError("%s > %s : %r" % (i[0], max, data[:max]))
+            raise DecodeError("%s > %s : %r" % (i[0], max, data[:max]))
     if data[i[0]] != b"l":
         return False
     i[0]+=1
     while data[i[0]] != b'e' and i[0] < max:
         if not _decode_string(data, i, max, j) and not  _decode_int(data, i, max, ll) and not _decode_pass_list(data, i, max) and not _decode_pass_dict(data, i, max):
             with gil:
-                raise ValueError("Unable to parse one of the element of the list %d %r" % (i[0], data[:max]))
+                raise DecodeError("Unable to parse one of the element of the list %d %r" % (i[0], data[:max]))
     if i[0] >= max:
         with gil:
-            raise ValueError("list_pass: %s > %s : %r" % (i[0], max, data[:max]))
+            raise DecodeError("list_pass: %s > %s : %r" % (i[0], max, data[:max]))
     if data[i[0]] != b'e':
         return False
     i[0]+=1
@@ -99,17 +99,17 @@ cdef int _decode_pass_dict(char* data, int *i, int max) nogil except -1:
     cdef long long ll[0]
     if i[0] >= max + 1:
         with gil:
-            raise ValueError("%s > %s : %r" % (i[0], max, data[:max]))
+            raise DecodeError("%s > %s : %r" % (i[0], max, data[:max]))
     if data[i[0]] != b"d":
         return False
     i[0]+=1
     while data[i[0]] != b'e' and i[0] < max:
         if not _decode_string(data, i, max, j) or (not _decode_string(data, i, max, j) and not _decode_int(data, i, max, ll) and not _decode_pass_list(data, i, max) and not _decode_pass_dict(data, i, max)):
             with gil:
-                raise ValueError("Unable to parse one of the element of the dict %d %r" % (i[0], data[:max]))
+                raise DecodeError("Unable to parse one of the element of the dict %d %r" % (i[0], data[:max]))
     if i[0] >= max:
         with gil:
-            raise ValueError("dict_pass: %s > %s : %r" % (i[0], max, data[:max]))
+            raise DecodeError("dict_pass: %s > %s : %r" % (i[0], max, data[:max]))
     if data[i[0]] != b'e':
         return False
     i[0]+=1
@@ -137,10 +137,10 @@ cdef int _decode_string(char* data, int* i, int max, int* j) nogil except -1:
                 return True
             else:
                 with gil:
-                     raise ValueError("%s > %s : %r" % (i[0], max, data[:max]))
+                     raise DecodeError("%s > %s : %r" % (i[0], max, data[:max]))
         else:
             with gil:
-                raise ValueError("%s != : at %s %r" % (data[j[0]], j[0], data[:max]))
+                raise DecodeError("%s != : at %s %r" % (data[j[0]], j[0], data[:max]))
     else:
         return False
 
@@ -162,10 +162,10 @@ cdef int _decode_int(char* data, int *i, int max, long long  *myint) nogil excep
                 return True
             else:
                 with gil:
-                     raise ValueError("%s > %s : %r" % (i[0], max, data[:max]))
+                     raise DecodeError("%s > %s : %r" % (i[0], max, data[:max]))
         else:
             with gil:
-                raise ValueError("%s != e at %s %r" % (data[j], j, data[:max]))
+                raise DecodeError("%s != e at %s %r" % (data[j], j, data[:max]))
     else:
         return False
 
@@ -232,6 +232,10 @@ class MethodUnknownError(BError):
     def __init__(self, t, msg=b"Method Unknow"):
         super(MethodUnknownError, self).__init__(t=t, e=[204, msg])
 
+class MissingT(ValueError):
+    pass
+class DecodeError(ValueError):
+    pass
 
 cdef class BMessage:
     cdef int set_r(self, int value) nogil:
@@ -322,9 +326,6 @@ cdef class BMessage:
             free(self._q)
 
     cdef int set_id(self, char* value, int size) nogil except -1:
-        if size != 20:
-            with gil:
-                raise ValueError("id must be 20B long")
         self.encoded_uptodate = False
         if self.has_id:
             free(self.id)
@@ -341,9 +342,6 @@ cdef class BMessage:
             free(self.id)
 
     cdef int set_target(self, char* value, int size) nogil except -1:
-        if size != 20:
-            with gil:
-                raise ValueError("id must be 20B long")
         self.encoded_uptodate = False
         if self.has_target:
             free(self.target)
@@ -360,9 +358,6 @@ cdef class BMessage:
             free(self.target)
 
     cdef int set_info_hash(self, char* value, int size) nogil except -1:
-        if size != 20:
-            with gil:
-                raise ValueError("id must be 20B long")
         self.encoded_uptodate = False
         if self.has_info_hash:
             free(self.info_hash)
@@ -1054,7 +1049,7 @@ cdef class BMessage:
         cdef long long ll[1]
         if i[0] > max:
             with gil:
-                raise ValueError("%s > %s : %r" % (i[0], max, data[:max]))
+                raise DecodeError("%s > %s : %r" % (i[0], max, data[:max]))
         if data[i[0]] != b'l':
             return False
         i[0]+=1
@@ -1076,7 +1071,7 @@ cdef class BMessage:
         j[0]=0
         if not _decode_string(data, i, max, j):
             with gil:
-                raise ValueError("Fail to decode dict key %d %s" % (i[0], data[:max]))
+                raise DecodeError("Fail to decode dict key %d %s" % (i[0], data[:max]))
 
         if (i[0]-j[0]) == 1 and strncmp(data + j[0], b"a", i[0]-j[0]) == 0:
             return self._decode_dict(data, i, max) and self.set_a(True)
@@ -1093,11 +1088,29 @@ cdef class BMessage:
         elif (i[0]-j[0]) == 1 and strncmp(data + j[0], b"q", i[0]-j[0]) == 0:
             return _decode_string(data, i, max, j) and self.set_q(data + j[0], i[0]-j[0])
         elif (i[0]-j[0]) == 2 and strncmp(data + j[0], b"id", i[0]-j[0]) == 0:
-            return _decode_string(data, i, max, j) and self.set_id(data + j[0], i[0]-j[0])
+            if _decode_string(data, i, max, j):
+                if i[0]-j[0] != 20:
+                    self.failed = True
+                    self.failed_msg = b"id should be of length 20"
+                return self.set_id(data + j[0], i[0]-j[0])
+            else:
+                return False
         elif (i[0]-j[0]) == 6 and strncmp(data + j[0], b"target", i[0]-j[0]) == 0:
-            return _decode_string(data, i, max, j) and self.set_target(data + j[0], i[0]-j[0])
+            if _decode_string(data, i, max, j):
+                if i[0]-j[0] != 20:
+                    self.failed = True
+                    self.failed_msg = b"target should be of length 20"
+                return self.set_target(data + j[0], i[0]-j[0])
+            else:
+                return False
         elif (i[0]-j[0]) == 9 and strncmp(data + j[0], b"info_hash", i[0]-j[0]) == 0:
-            return _decode_string(data, i, max, j) and self.set_info_hash(data + j[0], i[0]-j[0])
+            if _decode_string(data, i, max, j):
+                if i[0]-j[0] != 20:
+                    self.failed = True
+                    self.failed_msg = b"info_hash should be of length 20"
+                return self.set_info_hash(data + j[0], i[0]-j[0])
+            else:
+                return False
         elif (i[0]-j[0]) == 12 and strncmp(data + j[0], b"implied_port", i[0]-j[0]) == 0:
             return _decode_int(data, i, max, ll) and self.set_implied_port(ll[0])
         elif (i[0]-j[0]) == 4 and strncmp(data + j[0], b"port", i[0]-j[0]) == 0:
@@ -1110,26 +1123,25 @@ cdef class BMessage:
             if self._decode_values(data, i, max):
                 return True
             else:
-                with gil:
-                    raise ProtocolError("", "values items should be a list")
-        else:
-            #if self.debug:
-            #    error = <char*>malloc((i[0] + 1 - j[0]) * sizeof(char))
-            #    error[i[0]-j[0]]='\0'
-            #    strncpy(error, data + j[0], i[0] - j[0])
-            #    printf("error %s\n", error)
-            #    free(error)
-            if _decode_string(data, i, max, j):
-                return True
-            if _decode_int(data, i, max, ll):
-                return True
-            if _decode_pass_list(data, i, max):
-                return True
-            if _decode_pass_dict(data, i, max):
-                return True
+                self.failed = True
+                self.failed_msg = b"values items should be a list"
+        #if self.debug:
+        #    error = <char*>malloc((i[0] + 1 - j[0]) * sizeof(char))
+        #    error[i[0]-j[0]]='\0'
+        #    strncpy(error, data + j[0], i[0] - j[0])
+        #    printf("error %s\n", error)
+        #    free(error)
+        if _decode_string(data, i, max, j):
+            return True
+        if _decode_int(data, i, max, ll):
+            return True
+        if _decode_pass_list(data, i, max):
+            return True
+        if _decode_pass_dict(data, i, max):
+            return True
 
         with gil:
-            raise ValueError("Unable to decode element of dict at %d %r" % (j[0], data[:max]))
+            raise DecodeError("Unable to decode element of dict at %d %r" % (j[0], data[:max]))
 
     cdef int _decode_values(self, char* data, int *i, int max) nogil except -1:
         cdef int j[1]
@@ -1138,18 +1150,18 @@ cdef class BMessage:
         cdef char** values
         if i[0] >= max:
             with gil:
-                raise ValueError("%s > %s : %r" % (i[0], max, data[:max]))
+                raise DecodeError("%s > %s : %r" % (i[0], max, data[:max]))
         if not data[i[0]] == b'l':
             return False
         i[0]+=1
         while _decode_string(data, i, max, j):
             if (i[0]-j[0]) != 6:
-                with gil:
-                    raise ValueError("element of values are expected to be of length 6 and not %s" % (i[0]-j[0]))
+                self.failed = True
+                self.failed_msg = b"element of values are expected to be of length 6"
             c+=1
         if i[0] >=  max or data[i[0]] != b'e':
             with gil:
-                raise ValueError("End of values list not found %s >= %s found %s elements" % (i[0], max, c))
+                raise DecodeError("End of values list not found %s >= %s found %s elements" % (i[0], max, c))
         i[0] = k
         values = <char **>malloc(c * sizeof(char*))
         c=0
@@ -1169,10 +1181,10 @@ cdef class BMessage:
                 k = i[0]
                 if not self._decode_dict_elm(data, i, max):
                     with gil:
-                        raise ValueError("fail to decode dict element %d %r" % (k, data[:max]))
+                        raise DecodeError("fail to decode dict element %d %r" % (k, data[:max]))
         if data[i[0]] != b'e':
             with gil:
-                raise ValueError("End of dict not found %s>=%d %r" % (i[0], max, data[:max]))
+                raise DecodeError("End of dict not found %s>=%d %r" % (i[0], max, data[:max]))
         else:
             i[0]+=1
             return True
@@ -1192,6 +1204,7 @@ cdef class BMessage:
             self.r = False
             self.a = False
             self.e = False
+            self.failed = False
             self.has_y = False
             self.has_t = False
             self.has_q = False
@@ -1210,17 +1223,30 @@ cdef class BMessage:
         with nogil:
             if datalen > 0:
                 valid = self._decode(data, &i, datalen)
-                if valid:
-                    self.encoded_len = self._encode_len()
-                    self.encoded = <char *> malloc(self.encoded_len * sizeof(char))
-                    strncpy(self.encoded, data, self.encoded_len)
-                    self.encoded_uptodate = True
-                if not valid or not self.has_t or not self.has_y:
+                if not self.has_t:
                     with gil:
-                        if self.debug:
-                            print("%r" % data)
-                        if self.has_t:
-                            raise ProtocolError(self._t[:self.t_len])
-                        else:
-                            raise ProtocolError("")
+                        raise MissingT()
+                if self.failed:
+                    if self.has_y and strncmp(self._y, b"q", 1):
+                        with gil:
+                            raise ProtocolError(self.t, self.failed_msg)
+                    else:
+                        with gil:
+                          raise DecodeError(self.failed_msg)
+                #if valid:
+                #    self.encoded_len = self._encode_len()
+                #    self.encoded = <char *> malloc(self.encoded_len * sizeof(char))
+                #    strncpy(self.encoded, data, self.encoded_len)
+                #    self.encoded_uptodate = True
+                # every message MUST have a y field, every SHOULD have t, but we receive some
+                # error messages without them, so lets accepted them as en empty t
+                #if valid and not self.has_t and self.has_y and strncmp(self._y, b"e", 1):
+                #    self.set_t("", 0)
+                if not valid or not self.has_y:
+                    if self.has_y and strncmp(self._y, b"q", 1):
+                        with gil:
+                            raise ProtocolError(self.t)
+                    else:
+                        with gil:
+                            raise DecodeError()
         return data[i:]

@@ -45,6 +45,8 @@ cdef class BMessage:
     cdef unicode addr_addr_3
     cdef bytes addr_addr_2
     cdef int addr_port
+    cdef int failed
+    cdef char* failed_msg
 
     cdef int set_r(self, int value) nogil
     cdef int set_a(self, int value) nogil
