@@ -9,11 +9,18 @@
 # Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 #
 # (c) 2015 Valentin Samir
+import os
 
 from libc cimport math
 from libc.stdio cimport printf, sprintf
 from libc.string cimport strlen, strncmp, strcmp, strncpy, strcpy
 from libc.stdlib cimport atoi, atoll, malloc, free
+
+if os.name == 'posix':
+    from libc.stdlib cimport atoll
+else:
+    from libc.stdlib cimport atol as atoll
+
 from cython.parallel import prange
 
 import six
@@ -33,12 +40,14 @@ cdef int str_to_int(char* data, int len) nogil:
             free(msg)
     return i
 
-cdef int str_to_long_long(char* data, int len) nogil:
+cdef long str_to_long_long(char* data, int len) nogil:
     cdef char* msg = NULL
     cdef long long i
     if data[0] == b'-' and len > 16 or len > 17:
         with gil:
-            raise EnvironmentError("Trying to convert %s to long long but it's too big" % data[:len])
+            raise EnvironmentError(
+                "Trying to convert %s to long long but it's too big" % data[:len]
+            )
     try:
         msg = <char *>malloc((len+1) * sizeof(char))
         strncpy(msg, data, len)
