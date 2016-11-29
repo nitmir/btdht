@@ -24,6 +24,7 @@ try:
 except ImportError:
     import queue as Queue
 from functools import total_ordering
+from threading import Thread, Lock
 
 from libc.stdlib cimport atoi, malloc, free
 from libc.string cimport strlen, strncmp, strcmp, strncpy, strcpy
@@ -32,6 +33,7 @@ from .krcp cimport _decode_string, _decode_int as _decode_long
 cdef extern from "ctype.h":
     int isdigit(int c)
 
+#: an array mapping and int ([0-256]) to the corresponging byte (like the function :func:`chr`)
 cdef char BYTE_TO_BIT[256][8]
 # fill BYTE_TO_BIT array
 def __init():
@@ -42,6 +44,14 @@ __init()
 del __init
 
 cdef char _longid_to_char(char* id) nogil:
+    """
+        Transform a 8 long string of 0 and 1 like "10110110" in base 2 to the corresponding char
+        in base 256.
+
+        :param str id: A 8 Bytes long string with only 0 and 1 as characters
+        :return: A single char where the nth bit correspond to the nth bytes of ``id``
+        :rtype: str
+    """
     cdef unsigned char i = 0
     if id[0] == 1:
         i = i | (1 << 7)
@@ -62,6 +72,14 @@ cdef char _longid_to_char(char* id) nogil:
     return i
 
 cdef char* _longid_to_id(char* longid, int size=160) nogil except NULL:
+    """
+        Transform a base 2, 160 Bytes long id like "101...001" to its 20 Bytes base 256 form
+
+        :param str longid: A string, of length multiple of 8 contening only 0 and 1 chars
+        :param int size: The length of ``longid``, the default is 160.
+        :return: A ``size``/8 corresponding base 256 string
+        :rtype: str
+    """
     cdef int i
     cdef char* id
     if size//8*8 != size:
@@ -75,6 +93,15 @@ cdef char* _longid_to_id(char* longid, int size=160) nogil except NULL:
     return id
 
 cdef char* _id_to_longid(char* id, int size=20) nogil:
+    """
+        Convert a random string ``id`` of length ``size`` to its base 2 equivalent.
+        For example, "\0\xFF" is converted to "0000000011111111"
+
+        :param bytes id: A random string
+        :param int size: The length of ``id``
+        :return: The corresponding base 2 string
+        :rtype: bytes
+    """
     global BYTE_TO_BIT
     cdef char* ret = <char*>malloc((size * 8) * sizeof(char))
     cdef int i = 0
@@ -85,8 +112,13 @@ cdef char* _id_to_longid(char* id, int size=20) nogil:
 
 def id_to_longid(char* id, int l=20):
     """
-    convert a random char* to a unicode string of 1 and 0
-    example : "\0" -> "00000000"
+        convert a random bytes to a unicode string of 1 and 0
+        example : "\0" -> "00000000"
+
+        :param bytes id: A random string
+        :param int size: The length of ``id``
+        :return: The corresponding base 2 unicode string
+        :rtype: unicode
     """
     #cdef int l = len(id)
     with nogil:
@@ -449,6 +481,10 @@ class PollableQueue(Queue.Queue):
         self._putsocket.setblocking(0)
         self.sock = self._getsocket
 
+    def __del__(self):
+        self._putsocket.close()
+        self._getsocket.close()
+
     def _put(self, *args, **kwargs):
         Queue.Queue._put(self, *args, **kwargs)
         self._signal_put()
@@ -488,53 +524,387 @@ class SplitQueue(PollableQueue):
         return (key, ) + value
 
 
-def schedule(to_schedule):
+class Scheduler(object):
     """
-        Schedule the call of predefined iterator functions.
+        Schedule weightless threads and DHTs io
 
-        :param list to_schedule: A list of callable returning an iterator
-
-        Notes:
-            Iterators must behave as describe next. The first returned value must be an integer
-            describing the type of the iterator. 0 mean time bases and all subsequent yield must
-            return the next timestamp at which the iterator want to be called. 1 mean queue based.
-            The next call to the iterator must return an instance of :class:`PollableQueue`. All
-            subsequent yield value are then ignored. The queue based iterator will be called when
-            something is put on its queue.
+        A weightless threads is a python callable returning an iterator that behave as describe
+        next. The first returned value must be an integer describing the type of the iterator.
+        0 means time based and all subsequent yield must return the next timestamp at which the
+        iterator want to be called. 1 means queue based. The next call to the iterator must return
+        an instance of :class:`PollableQueue`. All subsequent yield value are then ignored.
+        The queue based iterator will be called when something is put on its queue.
     """
-    time_based = {}
-    queue_based = {}
-    timers = {}
-    names = {}
-    for i, (name, function) in enumerate(to_schedule):
+
+    #: map between an iterator and a unix timestamp representing the next time the iterator want to
+    #: to be executed
+    _time_based = {}
+    #: map between an iterator and a queue processed by this iterator, processed by the main thread
+    _queue_based = {}
+    #: map between an iterator and a queue processed by this iterator, processed by the secondary
+    #: thread
+    _user_queue = {}
+    #: A map between an iterator and its name
+    _names = {}
+    #: A map between its name and an iterator
+    _iterators = {}
+
+    #: A map between a :class:`PollableQueue` socket :attr:`PollableQueue.sock` and an iterator
+    _queue_base_socket_map = {}
+    #: A list of :attr:`PollableQueue.sock` to be processed on the main thread
+    _queue_base_sockets = []
+    #: A list of :attr:`PollableQueue.sock` to be processed on the secondary thread
+    _user_queue_sockets = []
+
+    #: A map between a :class:`dht.DHT_BASE.sock` and a :class:`dht.DHT_BASE` instance
+    _dht_sockets = {}
+    #: A map between the :attr:`PollableQueue.sock` socket of the :class:`dht.DHT_BASE.to_send`
+    #: queue and a :class:`dht.DHT_BASE` instance
+    _dht_to_send_sockets = {}
+    #: A list of all keys of :attr`_dht_to_send_sockets` and :attr:`_dht_sockets`
+    _dht_read_sockets = []
+
+    def _dht_write_sockets(self):
+        """
+            Compute dynamically the list of socket we need to write to.
+            All :class:`dht.DHT_BASE.sock` where :class:`dht.DHT_BASE.to_send` is not empty
+
+            :return: A list of socket we want write to
+            :rtype: list
+        """
+        try:
+            return [s for (s, dht) in six.iteritems(self._dht_sockets) if not dht.to_send.empty()]
+        except RuntimeError:
+            return []
+
+    _start_lock = None
+    _threads = None
+    _stoped = True
+
+    def __init__(self):
+        self._start_lock = Lock()
+        self._init_attrs()
+        self._threads = []
+
+    def _init_attrs(self):
+        """Ititialize the instance attributes"""
+        self._time_based = {}
+        self._queue_based = {}
+        self._user_queue = {}
+        self._names = {}
+        self._queue_base_socket_map = {}
+        self._queue_base_sockets = []
+        self._user_queue_sockets = []
+        self._iterators = {}
+
+        self._dht_sockets = {}
+        self._dht_to_send_sockets = {}
+        self._dht_read_sockets = []
+
+
+    def add_thread(self, name, function, user=False):
+        """
+            Schedule the call of weightless threads 
+
+            :param str name: The name of the thread to add. Must be unique in the :class:`Scheduler`
+                instance
+            :param function: A weightless threads, i.e a callable returning an iterator
+            :param bool user: If ``True`` the weightless threads is schedule in a secondary thread.
+                The default is ``False`` and the weightless threads is processed in the main
+                scheduler thread. This is usefull to put controled weightless threads and the main
+                thread, and all the other (like the user defined on_``msg``_(query|response))
+                function to the secondary one.
+
+        """
+        if name in self._iterators:
+            raise ValueError("name already used")
         iterator = function()
-        names[iterator] = name
+        self._names[iterator] = name
+        self._iterators[name] = iterator
         typ = iterator.next()
         if typ == 0:
-            time_based[i] = iterator
-            timers[i] = 0
+            if user == True:
+                raise ValueError("Only queue based threads can be put in the user loop")
+            self._time_based[iterator] = 0
         elif typ == 1:
             queue = iterator.next()
-            queue_based[queue] = iterator
+            if user == True:
+                self._user_queue[iterator] = queue
+                self._user_queue_sockets.append(queue.sock)
+            else:
+                self._queue_based[iterator] = queue
+                self._queue_base_sockets.append(queue.sock)
+            self._queue_base_socket_map[queue.sock] = iterator
         else:
             raise RuntimeError("Unknown iterator type %s" % typ)
-    next_time = 0
-    queue_base_socket_map = dict((q.sock, i) for (q, i) in six.iteritems(queue_based))
-    queue_base_sockets = [q.sock for q in queue_based.keys()]
-    try:
+
+    def del_thread(self, name, stop_if_empty=True):
+        """
+            Remove the weightless threads named ``name``
+
+            :param str name: The name of a thread
+            :param bool stop_if_empty: If ``True`` (the default) and the scheduler has nothing to
+                schedules, the scheduler will be stopped.
+        """
+        if name in self._iterators:
+            iterator = self._iterators[name]
+            try:
+                del self._iterators[name]
+            except KeyError:
+                pass
+            try:
+                del self._names[iterator]
+            except KeyError:
+                pass
+            try:
+                del self._time_based[iterator]
+            except KeyError:
+                pass
+            try:
+                queue = self._queue_based[iterator]
+                try:
+                    del self._queue_base_socket_map[queue.sock]
+                except KeyError:
+                    pass
+                try:
+                    del self._queue_based[iterator]
+                    self._queue_base_sockets.remove(queue.sock)
+                except KeyError:
+                    pass
+                try:
+                    del self._user_queue[iterator]
+                    self._user_queue_sockets.remove(queue.sock)
+                except KeyError:
+                    pass
+            except KeyError:
+                pass
+        if stop_if_empty and not self._dht_sockets and not self._iterators:
+            self.stop_bg()
+
+    def add_dht(self, dht):
+        """
+            Add a dht instance to be schedule by the scheduler
+
+            :param dht.DHT_BASE dht: A dht instance
+        """
+        self._dht_sockets[dht.sock] = dht
+        self._dht_to_send_sockets[dht.to_send.sock] = dht
+        self._dht_read_sockets.append(dht.sock)
+        self._dht_read_sockets.append(dht.to_send.sock)
+        for (name, function, user) in dht.to_schedule:
+            self.add_thread(name, function, user=user)
+
+    def del_dht(self, dht):
+        """
+            Remove a dht instance from the scheduler
+
+            :param dht.DHT_BASE dht: A dht instance
+        """
+        try:
+            del self._dht_sockets[dht.sock]
+        except KeyError:
+            pass
+        try:
+            del self._dht_to_send_sockets[dht.to_send.sock]
+        except KeyError:
+            pass
+        try:
+            self._dht_read_sockets.remove(dht.sock)
+        except ValueError:
+            pass
+        try:
+            self._dht_read_sockets.remove(dht.to_send.sock)
+        except ValueError:
+            pass
+        for (name, _, _) in dht.to_schedule:
+            self.del_thread(name)
+
+    def thread_alive(self, name):
+        """
+            Test is a weightless threads named ``name`` is currently schedule
+
+            :param str name: The name of a thread
+            :return: ``True`` if a thread of name ``name`` if found
+            :rtype: bool
+        """
+        return self.is_alive() and name in self._iterators
+
+    def is_alive(self):
+        """Test if the scheduler main thread is alive
+
+        :return: ``True`` the scheduler main thread is alive, ``False`` otherwise
+        :rtype: bool
+        """
+        if self._threads and all([t.is_alive() for t in self._threads]):
+            return True
+        elif not self._threads and self._stoped:
+            return False
+        else:
+            print("One thread died, stopping scheduler")
+            self.stop(wait=False)
+            return False
+
+    def start(self, name_prefix="scheduler"):
+        """
+            start the scheduler
+
+            :param str name_prefix: Prefix to the scheduler threads names
+        """
+        with self._start_lock:
+            if not self._stoped:
+                print("Already started")
+                return
+            if self.zombie:
+                print("Zombie thread, unable de start")
+                return self._threads
+            self._stoped = False
+        t = Thread(target=self._schedule_loop)
+        t.setName("%s:schedule_loop" % name_prefix)
+        t.daemon = True
+        t.start()
+        self._threads.append(t)
+        t = Thread(target=self._schedule_user_loop)
+        t.setName("%s:schedule_user_loop" % name_prefix)
+        t.daemon = True
+        t.start()
+        self._threads.append(t)
+        t = Thread(target=self._io_loop)
+        t.setName("%s:io_loop" % name_prefix)
+        t.daemon = True
+        t.start()
+        self._threads.append(t)
+
+    def stop(self, wait=True):
+        """stop the scheduler"""
+        if self._stoped:
+            print("Already stoped or stoping in progress")
+            return
+        self._stoped = True
+        self._init_attrs()
+        if wait:
+            self._threads = [t for t in self._threads[:] if t.is_alive()]
+            for i in range(0, 30):
+                if self._threads:
+                    if i > 5:
+                        print("Waiting for %s threads to terminate" % len(self._threads))
+                    time.sleep(1)
+                    self._threads = [t for t in self._threads[:] if t.is_alive()]
+                else:
+                    break
+            else:
+                print("Unable to stop the scheduler threads, giving up")
+
+    def stop_bg(self):
+        """Lauch the stop process of the dht and return immediately"""
+        if not self._stoped:
+            t=Thread(target=self.stop)
+            t.daemon = True
+            t.start()
+
+    @property
+    def zombie(self):
+        """
+            :return: ``True`` if the scheduler is stoped but its threads are still running
+            :rtype: bool
+        """
+        return bool(self._stoped and [t for t in self._threads if t.is_alive()])
+
+    def _schedule_loop(self):
+        """The schedule loop calling weightless threads iterators then needed"""
+        next_time = 0
+        try:
+            while True:
+
+                if self._stoped:
+                    return
+
+                wait = max(0, next_time - time.time()) if self._time_based else 1
+
+                (sockets, _, _) = select.select(self._queue_base_sockets, [], [], wait)
+
+                # processing time based threads
+                if self._time_based:
+                    now = time.time()
+                    if now >= next_time:
+                        to_set = []
+                        try:
+                            for iterator, t in six.iteritems(self._time_based):
+                                if now >= t:
+                                    to_set.append((iterator, iterator.next()))
+                            for iterator, t in to_set:
+                                self._time_based[iterator] = t
+                        except RuntimeError:
+                            pass
+                        next_time = min(self._time_based.values())
+
+                # processing queue based threads
+                for sock in sockets:
+                    try:
+                        iterator = self._queue_base_socket_map[sock]
+                        iterator.next()
+                    except KeyError:
+                        pass
+        except StopIteration as error:
+            try:
+                print("Iterator %s stoped" % self._names[iterator])
+                self.del_thread(self._names[iterator])
+            except KeyError:
+                pass
+
+    def _schedule_user_loop(self):
+        """
+            A second schedule loop calling weightless threads iterators then needed
+
+            These second loop is here to handle user defined function (on_``msg``_query and
+            on_``msg``_response) than we do not known how long they can take, so they won't block
+            the main loop :meth:`_schedule_loop`.
+        """
+        next_time = 0
+        try:
+            while True:
+
+                if self._stoped:
+                    return
+                (sockets, _, _) = select.select(self._user_queue_sockets, [], [], 1)
+                # processing queue based threads
+                for sock in sockets:
+                    try:
+                        iterator = self._queue_base_socket_map[sock]
+                        iterator.next()
+                    except KeyError:
+                        pass
+        except StopIteration as error:
+            try:
+                print("Iterator %s stoped" % self._names[iterator])
+                self.del_thread(self._names[iterator])
+            except KeyError:
+                pass
+
+    def _io_loop(self):
         while True:
-            now = time.time()
-            wait = max(0, next_time - now)
-            (sockets, _, _) = select.select(queue_base_sockets, [], [], wait)
-            now = time.time()
-            if now >= next_time:
-                for i, iterator in six.iteritems(time_based):
-                    if now >= timers[i]:
-                        timers[i] = iterator.next()
-                next_time = min(timers.values())
-            for sock in sockets:
-                iterator = queue_base_socket_map[sock]
-                iterator.next()
-    except StopIteration as error:
-        print("Iterator %s stopped" % names[iterator])
-        raise
+            if self._stoped:
+                return
+            try:
+                (sockets_read, sockets_write, _) = select.select(
+                    self._dht_read_sockets, self._dht_write_sockets(), [], 0.1
+                )
+            except socket.error as e:
+                self.debug(0, "recv:%r" %e )
+                raise
+            sockets_write = set(sockets_write)
+            for sock in sockets_read:
+                try:
+                    if sock in self._dht_sockets:
+                        dht = self._dht_sockets[sock]
+                        if dht.stoped:
+                            self.del_dht(dht)
+                        else:
+                            dht._process_incoming_message()
+                    else:
+                        dht = self._dht_to_send_sockets[sock]
+                        if dht.stoped:
+                            self.del_dht(dht)
+                        elif dht.sock in sockets_write:
+                            dht._process_outgoing_message()
+                except KeyError:
+                    pass

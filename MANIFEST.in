@@ -1,4 +1,4 @@
-recursive-include btdht *
+recursive-include btdht *.c *.py *.pyx *.pxd
 include setup.cfg
 include Makefile
 include LICENSE

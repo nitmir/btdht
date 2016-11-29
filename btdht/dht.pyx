@@ -32,7 +32,7 @@ except ImportError:
     import queue as Queue
 from functools import total_ordering, reduce
 from threading import Thread, Lock
-from random import shuffle
+from random import shuffle, randint
 
 import datrie
 
@@ -160,12 +160,19 @@ cdef class DHT_BASE:
     _long_clean = 0
     #: heigth of the routing table (a binary tree) during the last run of :meth:`_routine`
     _root_heigth = 0
+    #: a :class:`utils.Scheduler` instance
+    _scheduler = None
 
 
     def __init__(self, routing_table=None, bind_port=None, bind_ip="0.0.0.0",
       id=None, ignored_ip=[], debuglvl=0, prefix="", process_queue_size=500,
-      ignored_net=None
+      ignored_net=None, scheduler=None
     ):
+        if self.__class__ == DHT_BASE:
+            raise RuntimeError(
+                "DHT_BASE cannot be directly instantiated, use DHT instead or any subclass that"
+                " may have be defined"
+            )
         # checking the provided id or picking a random one
         if id is not None:
             if len(id) != 20:
@@ -175,9 +182,11 @@ cdef class DHT_BASE:
             id = ID().value
         self.myid = ID(id)
 
+        # initialize the scheduler
+        self._scheduler = utils.Scheduler() if scheduler is None else scheduler
+
         # initialising the routing table
-        self.root = RoutingTable() if routing_table is None else routing_table
-        self._to_process = PollableQueue(maxsize=process_queue_size)
+        self.root = RoutingTable(scheduler=self._scheduler, prefix=prefix) if routing_table is None else routing_table
 
         self.bind_port = bind_port
         self.bind_ip = bind_ip
@@ -190,6 +199,7 @@ cdef class DHT_BASE:
         self.debuglvl = debuglvl
         self.prefix = prefix
 
+        # initialize public attributes
         self.threads = []
         self.transaction_type = {}
         self.token = collections.defaultdict(list)
@@ -198,6 +208,7 @@ cdef class DHT_BASE:
         self.last_msg = 0
         self.last_msg_rep = 0
 
+        # initialize private attributes
         self._peers=collections.defaultdict(collections.OrderedDict)
         self._got_peers=collections.defaultdict(collections.OrderedDict)
         self._get_peer_loop_list = []
@@ -213,14 +224,13 @@ cdef class DHT_BASE:
         self._last_socket_stats = 0
         self._long_clean = 0
         self._root_heigth = 0
+        self._to_process = PollableQueue(maxsize=process_queue_size)
 
         self.to_schedule = [
-            ("%sroutine" % self.prefix, self._routine),
-            ("%sget_peers_closest_loop" % self.prefix, self._get_peers_closest_loop),
-            ("%sprocess_loop" % self.prefix, self._process_loop)
+            ("%sroutine" % self.prefix, self._routine, False),
+            ("%sget_peers_closest_loop" % self.prefix, self._get_peers_closest_loop, False),
+            ("%sprocess_loop" % self.prefix, self._process_loop, True)
         ]
-
-        self.root.register_dht(self)
 
     def save(self, filename=None, max_node=None):
         """save the current list of nodes to ``filename``.
@@ -288,10 +298,11 @@ cdef class DHT_BASE:
                 list of still alive threads as parameter.
         """
         if self.stoped:
-            self.debug(0, "Already stoped or soping in progress")
+            self.debug(0, "Already stoped or stoping in progress")
             return
-        self.stoped = True
+        self._scheduler.del_dht(self)
         self.root.release_dht(self)
+        self.stoped = True
         self._threads = [t for t in self._threads[:] if t.is_alive()]
         #self.debug(0, "Trying to terminate thread for 1 minutes")
         for i in range(0, 30):
@@ -322,7 +333,7 @@ cdef class DHT_BASE:
         """``True`` if dht is stopped but one thread or more remains alive, ``False`` otherwise"""
         return bool(self.stoped and [t for t in self._threads if t.is_alive()])
 
-    def start(self, start_routing_table=True):
+    def start(self, start_routing_table=True, start_scheduler=True):
         """
             Start the dht:
                 * initialize some attributes
@@ -330,15 +341,11 @@ cdef class DHT_BASE:
                   (see :meth:`RoutingTable.register_dht`)
                 * initialize the dht socket (see :meth:init_socket)
                 * start the routing table if needed and ``start_routing_table` is ``True``
+                * start the scheduler if needed and ``start_scheduler`` is ``True``
 
             :param bool start_routing_table: If ``True`` (the default) also start the routing table
                 if needed
-
-            Notes:
-                The routing table needs to be started in last after all possible DHT using it.
-                As per default only one DHT use the routing table, the default is to start it
-                automatically immediatly after the DHT is started. ``start_routing_table`` allow
-                to diable this automatic start.
+            :param bool start_scheduler: If ``True``(the default) alsp start the scheduler
         """
         if not self.stoped:
             self.debug(0, "Already started")
@@ -358,8 +365,13 @@ cdef class DHT_BASE:
 
         self.init_socket()
 
+        self.root.register_dht(self)
+        self._scheduler.add_dht(self)
+
         if start_routing_table and self.root.stoped:
             self.root.start()
+        if start_scheduler and self._scheduler._stoped:
+            self._scheduler.start()
 
     def is_alive(self):
         """Test if all threads of the dht are alive, stop the dht if one of the thread is dead
@@ -368,9 +380,16 @@ cdef class DHT_BASE:
             threads.
         :rtype: bool
         """
-        if self.threads and reduce(lambda x,y: x and y, [t.is_alive() for t in self.threads]):
+        weigthless_threads_satus = [
+            self._scheduler.thread_alive(s[0]) for s in self.to_schedule
+        ]
+        if (
+            self.threads is not None and
+            all([t.is_alive() for t in self.threads])
+            and all(weigthless_threads_satus)
+        ):
             return True
-        elif not self._threads and self.stoped:
+        elif not self._threads and self.stoped and not any(weigthless_threads_satus):
             return False
         else:
             self.debug(0, "One thread died, stopping dht")
@@ -427,7 +446,11 @@ cdef class DHT_BASE:
         self.sock.setsockopt(socket.IPPROTO_IP, IN.IP_MTU_DISCOVER, IN.IP_PMTUDISC_DO)
         self.sock.setblocking(0)
         if self.bind_port:
-            self.sock.bind((self.bind_ip, self.bind_port))
+            try:
+                self.sock.bind((self.bind_ip, self.bind_port))
+            except socket.error:
+                self.debug(-10, "fail to bind to port %s" % self.bind_port)
+                raise
         else:
             self.sock.bind((self.bind_ip, 0))
             # set :attr:`bind_port` to the port choosen by the system
@@ -585,8 +608,11 @@ cdef class DHT_BASE:
             return peers
 
     def _get_peers_closest_loop(self):
+        """
+            Weigthless thread dealing we the :attr:`_get_peer_loop_list` heapq. Its execution
+            is handled by :attr:`_scheduler` of type :class:`utils.Scheduler`
+        """
         yield 0
-        """Function run by the thread exploring the DHT"""
         def on_stop(hash, typ):
             self.root.release_torrent(hash)
             if typ == "peers":
@@ -665,7 +691,6 @@ cdef class DHT_BASE:
                 del tried_nodes
                 del closest
             yield (time.time() + tosleep)
-            #self.sleep(tosleep, stop)
 
     def _get_peers(self, info_hash, compact=True, errno=0):
         """
@@ -740,10 +765,23 @@ cdef class DHT_BASE:
         else:
             return list(self.root.get_closest_nodes(id))
 
-    def bootstarp(self):
-        """boostrap the DHT to some wellknown nodes"""
+    def bootstarp(
+        self,
+        addresses=[
+            ("router.utorrent.com", 6881), ("grenade.genua.fr", 6880), ("dht.transmissionbt.com", 6881)
+        ]
+    ):
+        """
+            Boostrap the DHT to some wellknown nodes
+
+            :param list addresses: A list of couple (node addresse, node ip). The default the list
+                of the following nodes
+                    * router.utorrent.com:6881
+                    * dht.transmissionbt.com:6881
+                    * grenade.genua.fr:6880
+        """
         self.debug(0,"Bootstraping")
-        for addr in [("router.utorrent.com", 6881), ("genua.fr", 6880), ("dht.transmissionbt.com", 6881)]:
+        for addr in addresses:
             msg = BMessage()
             msg.y = b'q'
             msg.q = b"find_node"
@@ -756,7 +794,12 @@ cdef class DHT_BASE:
 
 
     def _update_node(self, obj):
-        """update a node the in routing table on msg received"""
+        """
+            Update a node the in routing table on msg receival, especially its
+            :attr:`Node.last_query` :attr:`Node.last_response` and :attr:`Node.failed` attributes
+
+            :param brcp.BMessage obj: A reived message
+        """
         if obj.y == b"q" or obj.y == b"r":
             id = obj.get(b"id")
             if id:
@@ -778,36 +821,16 @@ cdef class DHT_BASE:
             self.debug(2, "obj of type %r" % obj.y)
 
     def sendto(self, msg, addr):
-        """program a msg to be send over the network
+        """
+            Program a msg to be send over the network
 
-        Args:
-           msg (str): message to be send to
-           addr (tuple of str, port): address to send to
+            :param bytes msg: The message to send
+            :param tuple addr: A couple (ip, port) to send the message to. ip is in dotted notation
+
+            Notes:
+                The message is push to the :attr:`to_send` queue.
         """
         self.to_send.put((msg, addr))
-
-    def _socket_loop(self):
-        """function lauch by the thread receiving the udp messages from the DHT"""
-        while True:
-            if self.stoped:
-                return
-            try:
-                (sockets_read, sockets_write, _) = select.select(
-                    [self.sock, self.to_send.sock],
-                    [] if self.to_send.empty() else [self.sock],
-                    [],
-                    0.1
-                )
-            except socket.error as e:
-                self.debug(0, "recv:%r" %e )
-                raise
-
-            for sock in sockets_read:
-                if sock == self.sock:
-                    self._process_incoming_message()
-                elif sock == self.to_send.sock and sockets_write:
-                    self._process_outgoing_message()
-
 
     def _process_outgoing_message(self):
         """
@@ -917,7 +940,16 @@ cdef class DHT_BASE:
 
 
     cdef void _set_transaction_id(self, BMessage query, int id_len=6):
-        """Set the transaction id (key t of the dictionnary) on a query"""
+        """
+            Set the transaction id (key t of the dictionnary) on a query
+
+            :param krcp.BMessage query: A query message
+            :param int id_len: The len of the generated transaction id. The default is 6.
+
+            Notes:
+                In case of collision with a already generated id, ``_set_transaction_id`` is
+                called again, incrementing ``id_len``.
+        """
         id = os.urandom(id_len)
         if id in self.transaction_type:
             self._set_transaction_id(query, id_len=id_len+1)
@@ -925,9 +957,19 @@ cdef class DHT_BASE:
         query.set_t(id, id_len)
 
     def _get_token(self, ip):
-        """Generate a token for `ip`"""
+        """
+            Return a token for ``ip``
+
+            :param str ip: A ip address in dotted notation
+            :return: A random id of lendth 4
+            :rtype: bytes
+
+            Notes:
+                Generate at most 1 new token by ip every 5 min. A token is considered valid
+                until 10 min after it has been generated.
+
+        """
         if ip in self.token and self.token[ip][-1][1] < 300:
-            #self.token[ip] = (self.token[ip][0], time.time())
             return self.token[ip][-1][0]
         else:
             id = os.urandom(4)
@@ -935,7 +977,13 @@ cdef class DHT_BASE:
             return id
 
     def _get_valid_token(self, ip):
-        """Return a list of valid tokens for `ip`"""
+        """
+            Return a list of valid tokens for ``ip``
+
+            :param str ip: A ip address in dotted notation
+            :return: A list of valid tokens for ``ip``
+            :rtype: list
+        """
         if ip in self.token:
             now = time.time()
             return [t[0] for t in self.token[ip] if (now - t[1]) < 600]
@@ -950,7 +998,25 @@ cdef class DHT_BASE:
         pass
 
     def _clean(self):
-        """Function cleaning datastructures of the DHT"""
+        """
+            Function cleaning datastructures of the DHT
+
+            The following cleaning is done every 15 seconds
+                * delete entries from :attr:`transaction_type` (query without response) older than
+                  30 seconds
+                * Remove dead threads from :attr:`_threads`
+                * If no message has been received since more than 2 minutes, stop the DHT
+                * If no response to our query has been received since more than 5 minutes,
+                  stop the DHT
+                * call the :meth:`clean` method
+
+            The following cleaning is done every 15 minutes
+                * delete expired tokens (older than 10 min) from :attr:`token`
+                * delete received token older than 10 min from :attr:`mytoken`
+                * delete peers not annonced since more than 30min from :attr:`_peers`
+                * delete peers from get_peer response older than 15min from :attr:`_got_peers`
+                * call the :meth:`clean_long` method
+        """
         now = time.time()
 
         to_delete = []
@@ -963,10 +1029,13 @@ cdef class DHT_BASE:
         self._threads = [t for t in self._threads[:] if t.is_alive()]
 
         if now - self.last_msg > 2 * 60:
-            self.debug(0, "No msg since more then 2 minutes")
+            self.debug(-10, "No msg since more than 2 minutes on udp port %d" % self.bind_port)
             self.stop()
         elif now - self.last_msg_rep > 5 * 60:
-            self.debug(0, "No msg response since more then 5 minutes")
+            self.debug(
+                -10,
+                "No msg response since more than 5 minutes on udp port %d" % self.bind_port
+            )
             self.stop()
 
         self.clean()
@@ -1034,20 +1103,22 @@ cdef class DHT_BASE:
             self._long_clean = now
 
     def build_table(self):
-        """Build the routing table by querying find_nodes on his own id"""
+        """Build the routing table by querying find_nodes on the dht own id :attr:`myid`"""
         nodes = self.get_closest_nodes(self.myid)
         for node in nodes:
             node.find_node(self, self.myid)
         return bool(nodes)
 
     def _routine(self):
-        """function lauch by the thread performing some routine (boostraping, building the routing table, cleaning) on the DHT"""
+        """
+            Weigthless thread performing some routine (boostraping, building the routing table,
+            cleaning) on the DHT
+        """
         yield 0
         next_routine = time.time() + 15
         while True:
             if self.stoped:
                 return
-            #self.sleep(next_routine - time.time())
             yield next_routine
             now = time.time()
             next_routine = now + 15
@@ -1059,7 +1130,7 @@ cdef class DHT_BASE:
             if self._root_heigth != self.root.heigth():
                 self.debug(1, "Fetching my own id")
                 if self.build_table():
-                    self._root_heigth += 1
+                    self._root_heigth = self.root.heigth()
 
             # displaying some stats
             (in_s, out_s, delta) = self._socket_stats()
@@ -1067,17 +1138,40 @@ cdef class DHT_BASE:
                 (nodes, goods, bads) = self.root.stats()
                 if goods <= 0:
                     self.bootstarp()
-                self.debug(0 if in_s <= 0 and out_s > 0 and goods < 20 else 1, "%d nodes, %d goods, %d bads | in: %s, out: %s en %ss" % (nodes, goods, bads, in_s, out_s, int(delta)))
+                    next_routine = now + 1
+                self.debug(
+                    0 if in_s <= 0 and out_s > 0 and goods < 20 else 1,
+                    "%d nodes, %d goods, %d bads | in: %s, out: %s en %ss" % (
+                        nodes, goods, bads, in_s, out_s, int(delta)
+                    )
+                )
 
 
     def register_message(self, msg):
-        """register a dht message to be processed
+        """
+            Register a dht message to be processed by the following user defined functions
+                * :meth:`on_error`
+                * :meth:`on_ping_query`
+                * :meth:`on_ping_response`
+                * :meth:`on_find_node_query`
+                * :meth:`on_find_node_response`
+                * :meth:`on_get_peers_query`
+                * :meth:`on_get_peers_response`
+                * :meth:`on_announce_peer_query`
+                * :meth:`on_announce_peer_response`
+                * ...
 
-        Note:
-          on query receival, the function on_`msg`_query will be call with the
-            query as parameter
-          on response receival, the function on_`msg`_response will be called with
-            the query and the response as parameters
+            :param bytes msg: A dht message to register like ``b'error'``, ``b'ping'``,
+                ``b'find_node'``, ``b'get_peers'`` or ``b'announce_peer'``
+
+            Note:
+              * on query reception, the function on_``msg``_query will be call with the
+                query as parameter
+              * on response reception, the function on_``msg``_response will be called with
+                the query and the response as parameters
+              * on error reception, the function ``on_error`` will be called with the error and
+                the query as parameter
+              * The message kind is in the ``q`` key of any dht query message
 
         Args:
           msg (str): a dht message type like ping, find_node, get_peers or announce_peer
@@ -1085,76 +1179,127 @@ cdef class DHT_BASE:
         self._to_process_registered.add(msg)
 
     def on_error(self, error, query=None):
-        """function called then a query has be responded by an error message. Can safely the overloaded
+        """
+            Function called then a query has be responded by an error message.
+            Can safely the overloaded.
 
-        Args:
-          error (BError): An error instance
-          query (BMessage, optional): query that was reply by an error
+            :param krcp.Berror error: An error instance
+            :param krcp.BMessage query: An optional query raising the error message
+
+            Notes:
+                For this function to be called on error reception, you need to call
+                :meth:`register_message` with the parameter ``b'error'``
         """
         pass
     def on_ping_response(self, query, response):
-        """function called on a ping response reception. Can safely the overloaded
+        """
+            Function called on a ping response reception. Can safely the overloaded
 
-        Args:
-          query (BMessage): the sent query object
-          response (BMessage): the received response object
+            :param krcp.BMessage query: the sent query object
+            :param krcp.BMessage response: the received response object
+
+            Notes:
+                For this function to be called on ping response reception, you need to call
+                :meth:`register_message` with the parameter ``b'ping'``
         """
         pass
     def on_find_node_response(self, query, response):
-        """function called on a find_node response reception. Can safely the overloaded
+        """
+            Function called on a find_node response reception. Can safely the overloaded
 
-        Args:
-          query (BMessage): the sent query object
-          response (BMessage): the received response object
+            :param krcp.BMessage query: the sent query object
+            :param krcp.BMessage response: the received response object
+
+            Notes:
+                For this function to be called on find_node response reception, you need to call
+                :meth:`register_message` with the parameter ``b'find_node'``
         """
         pass
     def on_get_peers_response(self, query, response):
-        """function called on a get_peers response reception. Can safely the overloaded
+        """
+            Function called on a get_peers response reception. Can safely the overloaded
 
-        Args:
-          query (BMessage): the sent query object
-          response (BMessage): the received response object
+            :param krcp.BMessage query: the sent query object
+            :param krcp.BMessage response: the received response object
+
+            Notes:
+                For this function to be called on get_peers response reception, you need to call
+                :meth:`register_message` with the parameter ``b'get_peers'``
         """
         pass
     def on_announce_peer_response(self, query, response):
-        """function called on a announce_peer response reception. Can safely the overloaded
+        """
+            Function called on a announce_peer response reception. Can safely the overloaded
 
-        Args:
-          query (BMessage): the sent query object
-          response (BMessage): the received response object
+            :param krcp.BMessage query: the sent query object
+            :param krcp.BMessage response: the received response object
+
+            Notes:
+                For this function to be called on announce_peer response reception, you need to call
+                :meth:`register_message` with the parameter ``b'announce_peer'``
         """
         pass
     def on_ping_query(self, query):
-        """function called on a ping query reception. Can safely the overloaded
+        """
+            Function called on a ping query reception. Can safely the overloaded
 
-        Args:
-          query (BMessage): the received query object
+            :param krcp.BMessage query: the received query object
+
+            Notes:
+                For this function to be called on ping query reception, you need to call
+                :meth:`register_message` with the parameter ``b'ping'``
         """
         pass
     def on_find_node_query(self, query):
-        """function called on a find_node query reception. Can safely the overloaded
+        """
+            Function called on a find_node query reception. Can safely the overloaded
 
-        Args:
-          query (BMessage): the received query object
+            :param krcp.BMessage query: the received query object
+
+            Notes:
+                For this function to be called on find_node query reception, you need to call
+                :meth:`register_message` with the parameter ``b'find_node'``
         """
         pass
     def on_get_peers_query(self, query):
-        """function called on a get_peers query reception. Can safely the overloaded
+        """
+            Function called on a get_peers query reception. Can safely the overloaded
 
-        Args:
-          query (BMessage): the received query object
+            :param krcp.BMessage query: the received query object
+
+            Notes:
+                For this function to be called on get_peers query reception, you need to call
+                :meth:`register_message` with the parameter ``b'get_peers'``
         """
         pass
     def on_announce_peer_query(self, query):
-        """function called on a announce query reception. Can safely the overloaded
+        """
+            Function called on a announce query reception. Can safely the overloaded
 
-        Args:
-          query (BMessage): the received query object
+            :param krcp.BMessage query: the received query object
+
+            Notes:
+                For this function to be called on announce_peer query reception, you need to call
+                :meth:`register_message` with the parameter ``b'announce_peer'``
         """
         pass
     def _on_ping_response(self, query, response):
+        """
+            Function called on a ping response reception, do not overload, use
+            :meth:`on_ping_response` instead.
+
+            :param krcp.BMessage query: the sent query object
+            :param krcp.BMessage response: the received response object
+        """
         pass
     def _on_find_node_response(self, query, response):
+        """
+            Function called on a find_node response reception, do not overload, use
+            :meth:`find_node_response` instead.
+
+            :param krcp.BMessage query: the sent query object
+            :param krcp.BMessage response: the received response object
+        """
         nodes = Node.from_compact_infos(response.get(b"nodes", b""))
         for node in nodes:
             try:
@@ -1164,6 +1309,13 @@ cdef class DHT_BASE:
                 raise
         self.debug(2, "%s nodes added to routing table" % len(nodes))
     def _on_get_peers_response(self, query, response):
+        """
+            Function called on a get_peers response reception, do not overload, use
+            :meth:`on_get_peers_response` instead.
+
+            :param krcp.BMessage query: the sent query object
+            :param krcp.BMessage response: the received response object
+        """
         token = response.get(b"token")
         if token:
             self.mytoken[response[b"id"]]=(token, time.time())
@@ -1174,26 +1326,75 @@ cdef class DHT_BASE:
             ip = socket.inet_ntoa(ip)
             self._add_peer_queried(query[b"info_hash"], ip=ip, port=port)
     def _on_announce_peer_response(self, query, response):
+        """
+            Function called on a announce_peer response reception, do not overload, use
+            :meth:`on_announce_peer_response` instead.
+
+            :param krcp.BMessage query: the sent query object
+            :param krcp.BMessage response: the received response object
+        """
         pass
 
     def _on_ping_query(self, query):
+        """
+            Function called on a ping query reception, do not overload, use
+            :meth:`on_ping_query` instead.
+
+            :param krcp.BMessage query: the received query object
+        """
         pass
     def _on_find_node_query(self, query):
+        """
+            Function called on a find_node query reception, do not overload, use
+            :meth:`on_find_node_query` instead.
+
+            :param krcp.BMessage query: the received query object
+        """
         pass
     def _on_get_peers_query(self, query):
+        """
+            Function called on a get_peers query reception, do not overload, use
+            :meth:`on_get_peers_query` instead.
+
+            :param krcp.BMessage query: the received query object
+        """
         pass
     def _on_announce_peer_query(self, query):
+        """
+            Function called on a announce_peer query reception, do not overload, use
+            :meth:`on_announce_peer_query` instead.
+
+            :param krcp.BMessage query: the received query object
+        """
         try:
             if query.get(b"implied_port", 0) != 0:
                 if query.addr[1] > 0 and query.addr[1] < 65536:
-                    self._add_peer(info_hash=query[b"info_hash"], ip=query.addr[0], port=query.addr[1])
+                    self._add_peer(
+                        info_hash=query[b"info_hash"],
+                        ip=query.addr[0],
+                        port=query.addr[1]
+                    )
                 else:
-                    self.debug(1, "Invalid port number on announce %s, sould be within 1 and 65535" % query.addr[1])
+                    self.debug(
+                        1,
+                        "Invalid port number on announce %s, sould be within 1 and 65535" % (
+                            query.addr[1],
+                        )
+                    )
             else:
                 if query[b"port"] > 0 and query[b"port"] < 65536:
-                    self._add_peer(info_hash=query[b"info_hash"], ip=query.addr[0], port=query[b"port"])
+                    self._add_peer(
+                        info_hash=query[b"info_hash"],
+                        ip=query.addr[0],
+                        port=query[b"port"]
+                    )
                 else:
-                    self.debug(1, "Invalid port number on announce %s, sould be within 1 and 65535" % query["port"])
+                    self.debug(
+                        1,
+                        "Invalid port number on announce %s, sould be within 1 and 65535" % (
+                            query["port"],
+                        )
+                    )
         except KeyError as e:
             raise ProtocolError(query.t, b"Message malformed: %s key is missing" % e.args[0])
 
@@ -1212,7 +1413,6 @@ cdef class DHT_BASE:
                 self._to_process.put_nowait((query, obj))
             except Queue.Full:
                 self.debug(0, "Unable to queue msg to be processed, QueueFull")
-            #getattr(self, 'on_%s_response' % query.q)(query, obj)
 
     def _process_query(self, obj):
         if obj.q in [b"find_node", b"ping", b"get_peers", b"announce_peer"]:
@@ -1222,7 +1422,6 @@ cdef class DHT_BASE:
                 self._to_process.put_nowait((obj, None))
             except Queue.Full:
                 self.debug(0, "Unable to queue msg to be processed, QueueFull")
-            #getattr(self, 'on_%s_query' % obj.q)(obj)
 
     def _process_loop(self):
         """function lauch by the thread processing messages"""
@@ -1244,7 +1443,15 @@ cdef class DHT_BASE:
             yield
 
     def _decode(self, s, addr):
-        """decode a message"""
+        """
+            decode a message
+
+            :param bytes s: A newly received message
+            :param tuple addr: A couple (ip, port) with ip in dotted notation
+            :return A couple (decoded message, query) if the message is a response or an error,
+                (decoded message, None) otherwise
+            :rtype: tuple
+        """
         msg = BMessage(addr=addr, debug=self.debuglvl)
         msg.decode(s, len(s))
         try:
@@ -1300,46 +1507,38 @@ class TransactionIdUnknown(Exception):
     pass
 
 cdef class Node:
-    """A node of the dht in the routing table
-
-    Note:
-      A good node is a node has responded to one of our queries within the last
-      15 minutes. A node is also good if it has ever responded to one of our
-      queries and has sent us a query within the last 15 minutes. After 15 minutes
-      of inactivity, a node becomes questionable. Nodes become bad when they fail
-      to respond to multiple queries in a row.
-
-    Attributes:
-      id (str): 160bits (20 Bytes) identifier of the node
-      ip (str): ip address of the node in doted notation
-      port (int): port of the node
-      good (bool): True if the node is good
-      bad (bool): True if the node is bad
-      last_response (bool): last response date in secondes since epoch
-      last_query (bool): last query date in secondes since epoch
-      failed (int): number of reponse pending (increse on sending query to the
-        node, set to 0 on reception from the node)
-
     """
+        A node of the dht in the routing table
+
+        :param bytes id: The 160 bits (20 Bytes) long identifier of the node
+        :param str ip: The ip, in dotted notation of the node
+        :param int port: The udp dht port of the node
+        :param int last_response: Unix timestamp of the last received response from this node
+        :param int last_query: Unix timestamp of the last received query from this node
+        :param int failed: Number of consecutive queries sended to the node without responses
+
+        Note:
+          A good node is a node has responded to one of our queries within the last
+          15 minutes. A node is also good if it has ever responded to one of our
+          queries and has sent us a query within the last 15 minutes. After 15 minutes
+          of inactivity, a node becomes questionable. Nodes become bad when they fail
+          to respond to multiple queries in a row (3 query in a row in this implementation).
+    """
+    #: 160bits (20 Bytes) identifier of the node
     cdef char _id[20]
+    #: ip address of the node, encoded on 4 bytes
     cdef char _ip[4]
+    #: The udp port of the node
     cdef int _port
+    #: Unix timestamp of the last received response from this node
     cdef int _last_response
+    #: Unix timestamp of the last received query from this node
     cdef int _last_query
+    #: number of reponse pending (increase on sending query to the node, set to 0 on reception from
+    #: the node)
     cdef int _failed
 
-    def __init__(self, id,ip,int port, int last_response=0,int last_query=0,int failed=0):
-        """
-        Args:
-          id (str): A 160bits (20 Bytes) identifier
-          ip (str): ip address of the node in doted notation
-          port (int): port of the node
-          last_response (int, optional): last response (secondes since epoch)
-            from the node to one of our query. default is 0
-          last_query (int, optional): last query (secondes since epoch) from
-            the node. default is 0
-          failed (int, optional): number of pending response from the node. default is 0
-        """
+    def __init__(self, bytes id, ip, int port, int last_response=0, int last_query=0, int failed=0):
         cdef char* cip
         cdef char* cid
         if ip[0] == u'0':
@@ -1378,28 +1577,30 @@ cdef class Node:
             else:
                 return False
 
-
-    def __dealloc__(self):
-        with nogil:
-            #free(self._id)
-            #free(self._ip)
-            pass
-
+    #: udp port of the node
     property port:
         def __get__(self):return self._port
         def __set__(self, int i):self._port = i
+    #: Unix timestamp of the last received response from this node
     property last_response:
         def __get__(self):return self._last_response
         def __set__(self, int i):self._last_response = i
+    #: Unix timestamp of the last received query from this node
     property last_query:
         def __get__(self):return self._last_query
         def __set__(self, int i):self._last_query = i
+    #: number of reponse pending (increase on sending query to the node, set to 0 on reception from
+    #: the node)
     property failed:
         def __get__(self):return self._failed
         def __set__(self, int i):self._failed = i
+    #: 160bits (20 Bytes) identifier of the node
     property id:
         def __get__(self):
             return self._id[:20]
+    #: ``True`` if the node is a good node. A good node is a node has responded to one of our
+    #: queries within the last 15 minutes. A node is also good if it has ever responded to one of
+    #: our queries and has sent us a query within the last 15 minutes.
     property good:
         def __get__(self):
             now = time.time()
@@ -1407,11 +1608,14 @@ cdef class Node:
             # A node is also good if it has ever responded to one of our queries and has sent us a query within the last 15 minutes.
             return ((now - self.last_response) < 15 * 60) or (self.last_response > 0 and (now - self.last_query) < 15 * 60)
 
+    #: ``True`` if the node is a bad node (communication with the node is not possible). Nodes
+    #: become bad when they fail to respond to 3 queries in a row.
     property bad:
         def __get__(self):
             # Nodes become bad when they fail to respond to multiple queries in a row.
             return not self.good and self.failed > 3
 
+    #: ip address of the node in dotted notation
     property ip:
         def __get__(self):
             ip = socket.inet_ntoa(self._ip[:4])
@@ -1431,27 +1635,37 @@ cdef class Node:
         return "Node: %s:%s" % (self.ip, self.port)
 
     def compact_info(self):
+        """
+            Return the compact contact information of the node
+
+            Notes:
+                Contact information for peers is encoded as a 6-byte string.
+                Also known as "Compact IP-address/port info" the 4-byte IP address
+                is in network byte order with the 2 byte port in network byte order
+                concatenated onto the end.
+                Contact information for nodes is encoded as a 26-byte string.
+                Also known as "Compact node info" the 20-byte Node ID in network byte
+                order has the compact IP-address/port info concatenated to the end.
+        """
         return struct.pack("!20s4sH", self.id, self._ip, self.port)
 
     @classmethod
-    def from_compact_infos(cls, infos, v=""):
-        """Instancy nodes from multiple compact node info string
+    def from_compact_infos(cls, infos):
+        """
+            Instancy nodes from multiple compact node information string
 
-        Note:
-          Contact information for peers is encoded as a 6-byte string.
-          Also known as "Compact IP-address/port info" the 4-byte IP address
-          is in network byte order with the 2 byte port in network byte order
-          concatenated onto the end.
-          Contact information for nodes is encoded as a 26-byte string.
-          Also known as "Compact node info" the 20-byte Node ID in network byte
-          order has the compact IP-address/port info concatenated to the end.
+            :param bytes infos: A string of size multiple of 26
+            :return: A list of :class:`Node` instances
+            :rtype: list
 
-        Args:
-          infos (str): a string contening multiple compact node info
-            so its length should be a multiple of 26
-
-        Returns:
-          a list of Node instance
+            Notes:
+                Contact information for peers is encoded as a 6-byte string.
+                Also known as "Compact IP-address/port info" the 4-byte IP address
+                is in network byte order with the 2 byte port in network byte order
+                concatenated onto the end.
+                Contact information for nodes is encoded as a 26-byte string.
+                Also known as "Compact node info" the 20-byte Node ID in network byte
+                order has the compact IP-address/port info concatenated to the end.
         """
         nodes = []
         length = len(infos)
@@ -1469,29 +1683,27 @@ cdef class Node:
 
     @classmethod
     def from_compact_info(cls, info):
-        """Instancy nodes from multiple compact node info string
+        """
+            Instancy a node from its compact node infoformation string
 
-        Note:
-          Contact information for peers is encoded as a 6-byte string.
-          Also known as "Compact IP-address/port info" the 4-byte IP address
-          is in network byte order with the 2 byte port in network byte order
-          concatenated onto the end.
-          Contact information for nodes is encoded as a 26-byte string.
-          Also known as "Compact node info" the 20-byte Node ID in network byte
-          order has the compact IP-address/port info concatenated to the end.
+            :param bytes info: A string of length 26
+            :return: A node instance
+            :rtype: Node
 
-        Args:
-          infos (str): a string contening one compact node info
-            so its length should be exactly 26
-
-        Returns:
-          a Node instance
+            Notes:
+                Contact information for peers is encoded as a 6-byte string.
+                Also known as "Compact IP-address/port info" the 4-byte IP address
+                is in network byte order with the 2 byte port in network byte order
+                concatenated onto the end.
+                Contact information for nodes is encoded as a 26-byte string.
+                Also known as "Compact node info" the 20-byte Node ID in network byte
+                order has the compact IP-address/port info concatenated to the end.
         """
         if len(info) != 26:
             raise EnvironmentError("compact node info should be 26 chars long")
         (id, ip, port) = struct.unpack("!20s4sH", info)
         ip = socket.inet_ntoa(ip)
-        id = ID(id)
+        #id = ID(id)
         return cls(id, ip, port)
 
 
@@ -1508,10 +1720,10 @@ cdef class Node:
         return hash(self.id)
 
     def ping(self, DHT_BASE dht):
-        """send a ping query to the node
+        """
+            Send a ping query to the node
 
-        Args:
-          dht (DHT_BASE): a dht instance
+            :param DHT_BASE dht: The dht instance to use to send the message
         """
         id = dht.myid.value
         msg = BMessage()
@@ -1524,11 +1736,11 @@ cdef class Node:
         dht.sendto(msg.encode(), (self.ip, self.port))
 
     def find_node(self, DHT_BASE dht, target):
-        """send a find_node query to the node
+        """
+            Send a find_node query to the node
 
-        Args:
-          dht (DHT_BASE): a dht instance
-          target (str): the 160bits (20 bytes) target node id
+            :param DHT_BASE dht: The dht instance to use to send the message
+            :param bytes target: the 160bits (20 bytes) target node id
         """
         id = dht.myid.value
         target = ID.to_bytes(target)
@@ -1544,11 +1756,11 @@ cdef class Node:
         dht.sendto(msg.encode(), (self.ip, self.port))
 
     def get_peers(self, DHT_BASE dht, info_hash):
-        """send a get_peers query to the node
+        """
+            Send a get_peers query to the node
 
-        Args:
-          dht (DHT_BASE): a dht instance
-          info_hash (str): a 160bits (20 bytes) to get downloading peers
+            :param DHT_BASE dht: The dht instance to use to send the message
+            :param bytes info_hash: a 160bits (20 bytes) torrent id
         """
         id = dht.myid.value
         info_hash = ID.to_bytes(info_hash)
@@ -1564,12 +1776,12 @@ cdef class Node:
         dht.sendto(msg.encode(), (self.ip, self.port))
 
     def announce_peer(self, DHT_BASE dht, info_hash, int port):
-        """send a announce_peer query to the node
+        """
+            Send a announce_peer query to the node
 
-        Args:
-          dht (DHT_BASE): a dht instance
-          info_hash (str): a 160bits (20 bytes) hash to announce download
-          port (int): port where data for `info_hash` is avaible
+            :param DHT_BASE dht: The dht instance to use to send the message
+            :param bytes info_hash: A 160bits (20 bytes) torrent id to announce
+            :param int port: The tcp port where data for ``info_hash`` is available
         """
 
         cdef char* tk
@@ -1595,25 +1807,30 @@ cdef class Node:
 
 @total_ordering
 class Bucket(list):
-    """A bucket of nodes in the routing table
-
-    Attributes:
-       to_refresh (bool): True if the bucket need to be refresh
-       max_size (int): maximun number of element in the bucket
-       last_changed (int): last time the bucket had been updated un secodes
-         since epoch
     """
+        A bucket of nodes in the routing table
+
+        :param bytes id: A prefix identifier from 0 to 169 bits for the bucket
+        :param int id_length: number of signifiant bit in ``id`` (can also be seen as the length
+            between the root and the bucket in the routing table)
+        :param iterable init: some values to store initialy in the bucket
+    """
+    #: maximun number of element in the bucket
     max_size = 8
+    #: Unix timestamp, ast time the bucket had been updated
     last_changed = 0
+    #: A prefix identifier from 0 to 169 bits for the bucket
+    id = None
+    #: number of signifiant bit in :attr:`id`
+    id_length = 0
 
     __slot__ = ("id", "id_length")
 
     def own(self, id):
-        """Args:
-          id (str): a 160bit (20 Bytes) identifier
-
-        Returns:
-          True if `id` is handle by this bucket
+        """
+            :param bytes id: A 60bit (20 Bytes) identifier
+            :return: ``True`` if ``id`` is handled by this bucket
+            :rtype: bool
         """
         if not self.id:
             return True
@@ -1631,22 +1848,18 @@ class Bucket(list):
             return False
 
     def __init__(self, id=b"", id_length=0, init=None):
-        """
-        Args:
-          id (str): prefix identifier for the bucket
-          id_length (int): number of signifiant bit in `id`
-            (can also be seen as the length between the root
-            and the bucket in the routing table)
-          init (iterable, optional): some values to store
-            initialy in the bucket
-        """
         self.id = id
         self.id_length = id_length # en bit
         if init:
             super(Bucket, self).__init__(init)
 
     def random_id(self):
-        """return a random id handle by the bucket"""
+        """
+            :return: A random id handle by the bucket
+            :rtype: bytes
+
+            This is used to send find_nodes for randoms ids in a bucket
+        """
         id = ID()
         id_length = self.id_length
         id_end = bytes(bytearray((id[id_length//8],)))
@@ -1668,18 +1881,33 @@ class Bucket(list):
         return ID(self.id[0:id_length//8] + char + id[id_length//8+1:])
 
     def get_node(self, id):
-        """return the node with id `id` or raise NotFound"""
+        """
+            :return: A :class:`Node` with :attr:`Node.id`` equal to ``id``
+            :rtype: Node
+            :raises: :class:`NotFound` if no node is found within this bucket
+        """
         for n in self:
             if n.id == id:
                 return n
         raise NotFound()
 
     def add(self, dht, node):
-        """Try to add a node to the bucket
+        """
+            Try to add a node to the bucket.
 
-        Args:
-          dht (DHT_BASE): a dht instance
-          node (Node): a node instance
+            :param DHT_BASE dht: The dht instance the node to add is from
+            :param Node node: A node to add to the bucket
+            :raises: :class:`BucketFull` if the bucket is full
+
+            Notes:
+                The addition of a node to a bucket is done as follow:
+                    * if the bucket is not full, just add the node
+                    * if the bucket is full
+                        * if there is some bad nodes in the bucket, remove a bad node and add the
+                          node
+                        * if there is some questionnable nodes (neither good not bad), send a ping
+                          request to the oldest one, discard the node
+                        * if all nodes are good in the bucket, discard the node
         """
         if not self.own(node.id):
             raise ValueError("Wrong Bucket")
@@ -1712,14 +1940,14 @@ class Bucket(list):
             raise BucketFull()
 
     def split(self, rt, dht):
-        """Split the bucket into two buckets
+        """
+            Split the bucket into two buckets
 
-        Args:
-          rt (RoutingTable): a routing table instance
-          dht (DHT_BASE): a dht instance
-
-        Returns:
-          a tuple of two buckets
+            :param RoutingTable rt: The routing table handling the bucket
+            :param DHT_BASE dht: A dht using ``rt`` as routing table
+            :return: A couple of two bucket, the first one this the last significant bit of its id
+                equal to 0, the second, equal to 1
+            :rtype: tuple
         """
         if len(self) < self.max_size:
             raise BucketNotFull("Bucket not Full %r" % self)
@@ -1746,13 +1974,12 @@ class Bucket(list):
             return (b2, b1)
 
     def merge(self, bucket):
-        """Merge the bucket with `bucket`
+        """
+            Merge the bucket with ``bucket``
 
-        Args:
-          bucket (Bucket): bucket to be merged with
-
-        Returns
-          A merged bucket
+            :param Bucket bucket: a bucket to be merged with
+            :return: The merged bucket
+            :rtype: Bucket
         """
         l = [n for l in zip(self, bucket) for n in l if n.good][:self.max_size]
         return Bucket(id=self.id, id_length=self.id_length - 1, init=l)
@@ -1781,32 +2008,65 @@ class Bucket(list):
         except AttributeError:
             raise ValueError("%s not comparable with %s" % (other.__class__.__name__, self.__class__.__name__))
 
-class DHT(DHT_BASE):
-    pass
+
+DHT = type("DHT", (DHT_BASE,), {'__doc__': DHT_BASE.__doc__})
+
+
 class NotFound(Exception):
     pass
 
 class RoutingTable(object):
     """
-    Attributs:
-      trie (datrie.Trie): the routing table storage data structure
-      threads (list of Thread): threads of the routing table
-      zombie (bool): True if dht is stopped but one thread or more remains
-        alive
+        A routing table for one or more :class:`DHT_BASE` instances
+
+        :param utils.Scheduler scheduler: A scheduler instance
+        :param int debuglvl: Level of verbosity, default to ``0``.
     """
-    #__slot__ = ("trie", "_heigth", "split_ids", "info_hash", "lock", "_dhts", "stoped")
-    def __init__(self, debuglvl=0):
-        """
-        Args:
-          debuglvl (int, optional): level of verbosity. default is 0
-        """
+    #: :class:`int` the routing table instance verbosity level
+    debuglvl = 0
+    #: the routing table storage data structure, an instance of :class:`datrie.Trie`
+    trie = None
+    #: the state (stoped ?) of the routing table
+    stoped = True
+    #: Is a merge sheduled ?
+    need_merge = False
+    #: :class:`list` of the :class:`Thread<threading.Thread>` of the routing table instance
+    threads = []
+    #: A class:`list` of couple (weightless thread name, weightless thread function)
+    to_schedule = []
+    #: prefix in logs and threads name
+    prefix = ""
+    #: current height of the tree :attr:`trie` structure of the routing table
+    _heigth = 1
+    #: A set of registered dht instance with this routing table
+    _dhts = set()
+    #: A set of torrent id
+    _info_hash = set()
+    #: a set of dht id
+    _split_ids = set()
+    #: internal list of supposed alive threads
+    _threads = []
+    #: a set of bucket id to merge (keys of :class:`datrie.Trie`)
+    _to_merge = set()
+    #: internal list of supposed zombie (asked to stop but still running) threads
+    _threads_zombie= []
+    #: last debug message, use to prevent duplicate messages over 5 seconds
+    _last_debug = ""
+    #: time of the lat debug message, use to prevent duplicate messages over 5 seconds
+    _last_debug_time = 0
+    #: a :class:`utils.Scheduler` instance
+    _scheduler = None
+    #: A :class:`threading.Lock` instance to prevent concurrent start to happend
+    _lock = None
+
+    def __init__(self, scheduler, debuglvl=0, prefix=""):
         self.debuglvl = debuglvl
         self.trie = datrie.Trie(u"01")
         self.trie[u""]=Bucket()
         self._heigth=1
-        self.split_ids = set()
-        self.info_hash = set()
-        self.lock = Lock()
+        self._split_ids = set()
+        self._info_hash = set()
+        self._lock = Lock()
         self._dhts = set()
         self.stoped = True
         self.need_merge = False
@@ -1816,9 +2076,11 @@ class RoutingTable(object):
         self._threads_zombie= []
         self._last_debug = ""
         self._last_debug_time = 0
+        self._scheduler = scheduler
+        self.prefix = prefix
         self.to_schedule = [
-            ("RT:merge_loop", self._merge_loop),
-            ("RT:routine", self._routine),
+            ("RT%s:merge_loop" % prefix, self._merge_loop),
+            ("RT%s:routine" % prefix, self._routine),
         ]
 
     def stop_bg(self):
@@ -1829,8 +2091,10 @@ class RoutingTable(object):
     def stop(self):
         """stop the routing table and wait for all threads to terminate"""
         if self.stoped:
-            self.debug(0, "Already stoped or soping in progress")
+            self.debug(0, "Already stoped or stoping in progress")
             return
+        for s in self.to_schedule:
+            self._scheduler.del_thread(s[0])
         self.stoped = True
         self._threads = [t for t in self._threads[:] if t.is_alive()]
         #self.debug(0, "Trying to terminate thread for 1 minutes")
@@ -1854,7 +2118,7 @@ class RoutingTable(object):
 
     def start(self, **kwargs):
         """start the routing table"""
-        with self.lock:
+        with self._lock:
             if not self.stoped:
                 self.debug(0, "Already started")
                 return
@@ -1863,36 +2127,27 @@ class RoutingTable(object):
                 return self._threads_zombie
             self.stoped = False
 
-        # Le the routing table schedule the DHT iterators
-        to_schedule = []
-        to_schedule.extend(self.to_schedule)
-        for dht in self._dhts:
-            if dht.stoped is True:
-                raise RuntimeError(
-                    "Try to start the routing table before once of its DHT instances"
-                )
-            to_schedule.extend(dht.to_schedule)
-
-        self.threads = []
-        t = Thread(target=utils.schedule, args=(to_schedule,))
-        t.setName("RT:scheduler")
-        t.daemon = True
-        t.start()
-        self._threads.append(t)
-        self.threads.append(t)
-        t = Thread(target=self._dhts_send_loop)
-        t.setName("RT:dhts_send_loop")
-        t.daemon = True
-        t.start()
-        self._threads.append(t)
-        self.threads.append(t)
+        for (name, function) in self.to_schedule:
+            self._scheduler.add_thread(name, function)
 
     def is_alive(self):
-        """return True if all routing table threads are alive. Otherwire return False
-        and stop the routing table"""
-        if self.threads and reduce(lambda x,y: x and y, [t.is_alive() for t in self.threads]):
+        """
+            Test if all routing table threads are alive. If a thread is found dead, stop the
+            routingtable
+
+            :return: ``True`` if all routing table threads are alive, ``False`` otherwise
+            :rtype: bool
+        """
+        weigthless_threads_satus = [
+            self._scheduler.thread_alive(s[0]) for s in self.to_schedule
+        ]
+        if (
+            self.threads is not None and
+            all([t.is_alive() for t in self.threads]) and
+            all(weigthless_threads_satus)
+        ):
             return True
-        elif not self._threads and self.stoped:
+        elif not self._threads and self.stoped and not any(weigthless_threads_satus):
             return False
         else:
             self.debug(0, "One thread died, stopping dht")
@@ -1900,19 +2155,28 @@ class RoutingTable(object):
             return True
 
     def register_torrent(self, id):
-        """register a torrent `id` (info_hash) for spliting bucket containing this `id`
-
-        Note:
-          torrent can automaticaly be release by a dht instance after a get_peers.
-          For keeping a torrent registered, use the method `register_torrent_longterm`
         """
-        self.info_hash.add(id)
+            Register a torrent ``id`` (info_hash) for being tracked by the routing table.
+            This means that if a node need to be added to the bucket handling ``id``and the
+            bucket is full, then, this bucket will be split into 2 buckets
+
+            :param bytes id: A 160 bits (20 Bytes) torrent identifier
+
+            Note:
+              torrent ids can automaticaly be release by a dht instance after a get_peers.
+              For keeping a torrent registered, use the method :meth:`register_torrent_longterm`
+        """
+        self._info_hash.add(id)
 
     def release_torrent(self, id):
-        """release a torrent `id` (info_hash) and program the routing table to be merged"""
+        """
+            Release a torrent ``id`` (info_hash) and program the routing table to be merged
+
+            :param bytes id: A 160 bits (20 Bytes) torrent identifier
+        """
         try:
-            self.info_hash.remove(id)
-            if not id in self.split_ids:
+            self._info_hash.remove(id)
+            if not id in self._split_ids:
                 try:
                     key = self.trie.longest_prefix(utils.id_to_longid(ID.to_bytes(id)))
                     #self._to_merge.add(key)
@@ -1925,12 +2189,12 @@ class RoutingTable(object):
             pass
 
     def _merge_loop(self):
+        """Weigthless thread handling the merge of the routing table"""
         yield 0
         next_merge = 0
         # at most one full merge every 10 minutes
         next_full_merge = time.time() + 10 * 60
         while True:
-            #self.sleep(max(next_merge - time.time(), 1))
             if self.stoped:
                 return
             yield max(next_merge, time.time() + 1)
@@ -1953,14 +2217,23 @@ class RoutingTable(object):
                     yield i
 
     def register_torrent_longterm(self, id):
-        """Same as register_torrent but garanty that the torrent wont
-        be released automaticaly by the dht
         """
-        self.split_ids.add(id)
+            Same as :meth:`register_torrent` but garanty that the torrent wont be released
+            automaticaly by the dht.
+
+            :param bytes id: A 160 bits (20 Bytes) torrent identifier
+        """
+        self._split_ids.add(id)
+
     def release_torrent_longterm(self, id):
-        """for releasing torrent registered with the `register_torrent_longterm` method"""
+        """
+            For releasing torrent registered with the :meth`register_torrent_longterm` method
+
+            :param bytes id: A 160 bits (20 Bytes) torrent identifier
+
+        """
         try:
-            self.split_ids.remove(id)
+            self._split_ids.remove(id)
             if not self.need_merge:
                 self.debug(1, "Programming merge")
                 self.need_merge = True
@@ -1968,33 +2241,31 @@ class RoutingTable(object):
             pass
 
     def register_dht(self, dht):
-        """Register a `dht` instance to the routing table
-
-        Note:
-          on start, dht automaticaly register itself to its
-          routing table
         """
-        if dht.stoped is False:
-            RuntimeError(
-                "DHT instance must be registered on the routing table before the start "
-                "of the routing table"
-            )
+            Register a ``dht`` instance to the routing table
+
+            :param DHT_BASE dht: A dht instance
+
+            Notes:
+                on start, all dht instances automaticaly register themself to their routing tables
+        """
         self._dhts.add(dht)
-        self.split_ids.add(dht.myid.value)
+        self._split_ids.add(dht.myid.value)
 
     def release_dht(self, dht):
-        """release a `dht` instance to the routing table
+        """
+            Release a ``dht`` instance to the routing table, and shedule the routing table for a
+            merge.
 
-        Note:
-          on stop, dht automatially release itself from the
-          routing table
+            Notes:
+                on stop, dht automatially release itself from the routing table
         """
         try:
             self._dhts.remove(dht)
         except KeyError:
             pass
         try:
-            self.split_ids.remove(dht.myid)
+            self._split_ids.remove(dht.myid)
             if not self.need_merge:
                 self.debug(1, "Programming merge")
                 self.need_merge = True
@@ -2003,27 +2274,21 @@ class RoutingTable(object):
         if not self._dhts:
             self.stop()
 
-    def sleep(self, t, fstop=None):
-        """same as sleep on DHT_BASE"""
-        if t > 0:
-            t_int = int(t)
-            t_dec = t - t_int
-            for i in range(0, t_int):
-                time.sleep(1)
-                if self.stoped:
-                    if fstop:
-                        fstop()
-                    sys.exit(0)
-            time.sleep(t_dec)
-
     def debug(self, lvl, msg):
         """same as debug on DHT_BASE"""
-        if lvl <= self.debuglvl and (msg != self._last_debug or (time.time() - self._last_debug_time) > 5):
-            print("RT:%s" % msg)
+        if (
+            lvl <= self.debuglvl and
+            (msg != self._last_debug or (time.time() - self._last_debug_time) > 5)
+        ):
+            print("RT%s:%s" % (self.prefix, msg))
             self._last_debug = msg
             self._last_debug_time = time.time()
 
     def _routine(self):
+        """
+            Weigthless thread perfoming routine on the routing table like performing quering to
+            bucket with no activity and pinging questionnable (neither good nor bad) nodes.
+        """
         yield 0
         last_explore_tree = time.time()
         while True:
@@ -2032,48 +2297,52 @@ class RoutingTable(object):
             if self.stoped:
                 return
             yield (last_explore_tree + 60)
-            #self.sleep(60 - (time.time() - last_explore_tree))
-            dhts = list(self._dhts)
-            shuffle(dhts)
-            now = time.time()
-            i = 0
-            for key, bucket in self.trie.items():
-                if self.stoped:
-                    return
-                # if trie modifies while looping
-                if not key in self.trie:
-                    continue
-                # If bucket inactif for more than 15min, find_node on a random id in it
-                if now - bucket.last_changed > 15 * 60:
-                    id = bucket.random_id()
-                    nodes = self.get_closest_nodes(id)
-                    if nodes and dhts:
-                        nodes[0].find_node(dhts[0], id)
-                        i += 1
-                    del nodes
-                # If questionnable nodes, ping one of them
-                questionable = [node for node in bucket if not node.good and not node.bad]
+            if self._dhts:
+                dhts = list(self._dhts)
+                dhts_last_elt = len(dhts) - 1
+                shuffle(dhts)
+                now = time.time()
+                i = 0
+                for key, bucket in self.trie.items():
+                    if self.stoped:
+                        return
+                    # if trie modifies while looping
+                    if not key in self.trie:
+                        continue
+                    # If bucket inactif for more than 15min, find_node on a random id in it
+                    if now - bucket.last_changed > 15 * 60:
+                        id = bucket.random_id()
+                        nodes = self.get_closest_nodes(id)
+                        if nodes:
+                            nodes[0].find_node(dhts[randint(0, dhts_last_elt)], id)
+                            i += 1
+                        del nodes
+                    # If questionnable nodes, ping one of them
+                    questionable = [node for node in bucket if not node.good and not node.bad]
 
-                for dht in dhts:
-                    if not questionable:
-                        break
-                    questionable.pop().ping(dht)
-                    i+=1
-                del questionable
+                    for dht in dhts:
+                        if not questionable:
+                            break
+                        questionable.pop().ping(dht)
+                        i+=1
+                    del questionable
 
-                # give back the main in case of very big routing table to the scheduler
-                if i > 1000:
-                    yield 0
+                    # give back the main in case of very big routing table to the scheduler
+                    if i > 1000:
+                        yield 0
 
             last_explore_tree = time.time()
 
     def empty(self):
-        """Remove all subtree"""
+        """Empty the routing table, deleting all buckets"""
         self.trie = datrie.Trie("".join(chr(i) for i in range(256)))
         self.trie[u""]=Bucket()
 
     def stats(self):
-        """return the number of nodes, good nodes, bad nodes"""
+        """
+            :return: A triple (number of nodes, number of good nodes, number of bad nodes)
+            :rtype: tuple
+        """
         nodes = 0
         goods = 0
         bads = 0
@@ -2096,12 +2365,29 @@ class RoutingTable(object):
         return iter(self.trie.values())
 
     def get_node(self, id):
-        """return the node with id `id` or raise `NotFound`"""
+        """
+            :param bytes id: A 160 bits (20 Bytes) identifier
+            :return: A node with id ``id``
+            :rtype: Node
+            :raises: :class:`NotFound` if no nodes is found
+        """
         b = self.find(id)
         return b.get_node(id)
 
     def find(self, id, errno=0):
-        """retourn the bucket containing `id`"""
+        """
+            :param bytes id: A 160 bits (20 Bytes) identifier
+            :return: The bucket handling ``id``
+            :rtype: Bucket
+            :raises KeyError: then a racing condition with merging and/or spliting a bucket is met.
+                This should not happen
+
+            Notes:
+                Duging a split or merge of bucket it is possible that the bucket handling ``id``
+                is not found. :meth:`find` will retry at most 20 times to get the bucket.
+                In most case, during those retries, the split and/or merge will end and the bucket
+                handling ``id`` will be returned.
+        """
         try:
             return self.trie.longest_prefix_value(utils.id_to_longid(ID.to_bytes(id)))
         except KeyError as e:
@@ -2116,7 +2402,18 @@ class RoutingTable(object):
                     raise
 
     def get_closest_nodes(self, id, bad=False, errno=0):
-        """return the K closest nodes from `id` in the routing table"""
+        """
+            Return the K closest nodes from ``id`` in the routing table
+
+            :param bytes id: A 160 bits (20 Bytes) identifier
+            :param bool bad: Should we return bad nodes ? The default is ``False``
+
+            Notes:
+                If less than K (=8) good nodes is found, bad nodes will be included it solve
+                the case there the connection where temporary lost and all nodes in the routing
+                table marked as bad.
+                In normal operation, we should always find K (=8) good nodes in the routing table.
+        """
         try:
             id = ID(id)
             nodes = set(n for n in self.find(id) if not n.bad)
@@ -2142,11 +2439,11 @@ class RoutingTable(object):
             return self.get_closest_nodes(id, bad=bad, errno=errno+1)
 
     def add(self, dht, node):
-        """Add a node the the routing table
+        """
+            Add a node the the routing table
 
-        Args:
-          dht (DHT_BASE): a dht instance
-          node (Node): a node instance to be added
+            :param DHT_BASE dht: The dht instance ``node``is from
+            :param Node node: The node to add to the routing table
         """
         if node.ip in dht.ignored_ip:
             return
@@ -2158,7 +2455,7 @@ class RoutingTable(object):
         except BucketFull:
             # If bucket is full, try to split
             if b.id_length < 160:
-                for id in self.split_ids | self.info_hash:
+                for id in self._split_ids | self._info_hash:
                     if b.own(id):
                         self.split(dht, b)
                         self.add(dht, node)
@@ -2167,18 +2464,21 @@ class RoutingTable(object):
                 print("%r" % b)
 
     def heigth(self):
-        """height of the tree of the routing table"""
+        """
+            :return: the height of the tree of the routing table
+            :rtype: int
+        """
         return self._heigth
 
     def split(self, dht, bucket):
-        """request for a bucket identified by `id` to be split
+        """
+            Split ``bucket`` in two
 
-        Notes:
-          the routing table cover the entire 160bits space
+            :param DHT_BASE dht: A dht instance
+            :param Bucket bucket: A bucket from the routing table to split
 
-        Args:
-          dht (DHT_BASE): a dht instance
-          bucket (Bucket): a bucket in the routing table to split
+            Notes:
+                the routing table cover the entire 160bits space
         """
         try:
             prefix = utils.id_to_longid(bucket.id)[:bucket.id_length]
@@ -2198,6 +2498,13 @@ class RoutingTable(object):
         self.need_merge = True
 
     def _merge(self, stack=None):
+        """
+            Perform a merge of the routing table. If ``stack`` is provided, only a partial merge
+            on buckets identified by ``stack`` is perform. Otherwise, a full merge of the
+            routing table is done.
+
+            :param list stack: An optional list of keys of :attr:`trie` to merge.
+        """
         if stack is None:
             stack = self.trie.keys()
             full_merge = True
@@ -2218,7 +2525,7 @@ class RoutingTable(object):
             if not key:
                 continue
             to_merge =  True
-            for id in self.split_ids | self.info_hash:
+            for id in self._split_ids | self._info_hash:
                 if utils.id_to_longid(id).startswith(key[:-1]):
                     to_merge = False
                     break
@@ -2254,37 +2561,4 @@ class RoutingTable(object):
         if full_merge:
             self._heigth = max(len(k) for k in self.trie.keys()) + 1
             self.debug(1, "%s nodes merged in %ss" % (nodes_before - self.stats()[0], int(time.time() - started)))
-
-    def _dhts_send_loop(self):
-        sockets = {}
-        to_send_sockets = {}
-        for dht in self._dhts:
-            sockets[dht.sock] = dht
-            to_send_sockets[dht.to_send.sock] = dht
-        read_sockets = [s for s in sockets] + [s for s in to_send_sockets]
-        def write_sockets():
-            return [s for (s, dht) in six.iteritems(sockets) if not dht.to_send.empty()]
-        while True:
-            if self.stoped:
-                return
-            try:
-                (sockets_read, sockets_write, _) = select.select(
-                    read_sockets, write_sockets(), [], 0.1
-                )
-            except socket.error as e:
-                self.debug(0, "recv:%r" %e )
-                raise
-            sockets_write = set(sockets_write)
-            for sock in sockets_read:
-                if sock in sockets:
-                    dht = sockets[sock]
-                    if dht.stoped:
-                        return
-                    dht._process_incoming_message()
-                else:
-                    dht = to_send_sockets[sock]
-                    if dht.stoped:
-                        return
-                    if dht.sock in sockets_write:
-                        dht._process_outgoing_message()
 
