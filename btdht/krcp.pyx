@@ -74,8 +74,8 @@ cdef char** vlist_to_array(l, int size=6):
 
 
 cdef int _decode_pass_list(char* data, int *i, int max) nogil except -1:
-    cdef int j[0]
-    cdef long long ll[0]
+    cdef int j[1]
+    cdef long long ll[1]
     if i[0] >= max + 1:
         with gil:
             raise DecodeError("%s > %s : %r" % (i[0], max, data[:max]))
@@ -95,8 +95,8 @@ cdef int _decode_pass_list(char* data, int *i, int max) nogil except -1:
     return True
 
 cdef int _decode_pass_dict(char* data, int *i, int max) nogil except -1:
-    cdef int j[0]
-    cdef long long ll[0]
+    cdef int j[1]
+    cdef long long ll[1]
     if i[0] >= max + 1:
         with gil:
             raise DecodeError("%s > %s : %r" % (i[0], max, data[:max]))
