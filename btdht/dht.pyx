@@ -14,7 +14,6 @@ from libc.string cimport strlen, strncmp, strcmp, strncpy, strcpy
 from libc.stdlib cimport atoi, malloc, free
 
 import os
-import IN
 import sys
 import time
 import six
@@ -33,6 +32,11 @@ except ImportError:
 from functools import total_ordering, reduce
 from threading import Thread, Lock
 from random import shuffle, randint
+
+try:
+    import IN
+except ImportError:
+    IN = None
 
 import datrie
 
@@ -443,7 +447,11 @@ cdef class DHT_BASE:
         self.to_send = PollableQueue()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         #self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.setsockopt(socket.IPPROTO_IP, IN.IP_MTU_DISCOVER, IN.IP_PMTUDISC_DO)
+        if IN is not None:
+            try:
+                self.sock.setsockopt(socket.IPPROTO_IP, IN.IP_MTU_DISCOVER, IN.IP_PMTUDISC_DO)
+            except AttributeError:
+                pass
         self.sock.setblocking(0)
         if self.bind_port:
             try:
