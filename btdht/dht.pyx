@@ -856,11 +856,14 @@ cdef class DHT_BASE:
             except socket.error as e:
                 # 90: Message too long
                 # 13: Permission denied
-                if e.errno in [90, 13]:
+                #: 10013: same as 13 but on windows
+                #: 10040: same as 90 but on windows
+                if e.errno in [90, 13, 10013, 10040]:
                     self.debug(0, "send:%r %r %r" % (e, addr, msg))
                 # 11: Resource temporarily unavailable, try again
                 #  1: Operation not permitted
-                elif e.errno in [11, 1]:
+                # 10035: same as 11 but on windows
+                elif e.errno in [11, 1, 10035]:
                     pass
                 else:
                     self.debug(0, "send:%r %r" % (e, addr) )
@@ -929,7 +932,11 @@ cdef class DHT_BASE:
             self.sendto(error.encode(), addr)
         # socket unavailable ?
         except socket.error as e:
-            if e.errno not in [11, 1]: # 11: Resource temporarily unavailable
+            # 11: Resource temporarily unavailable
+            # 10035: same as 11 but on windows
+            # 1: premission denied
+            # 10013: same as 1 but on windows
+            if e.errno not in [11, 1, 10035, 10013]:
                 self.debug(0, "send:%r : (%r, %r)" % (e, data, addr))
                 raise
         except MissingT:

@@ -493,7 +493,7 @@ class PollableQueue(Queue.Queue):
         try:
             self._putsocket.send(b'x')
         except socket.error as error:
-            if error.errno != 11:  # Resource temporarily unavailable
+            if error.errno not in [11, 10035]:  # Resource temporarily unavailable
                 raise
 
     def _comsume_get(self):
@@ -501,8 +501,8 @@ class PollableQueue(Queue.Queue):
             self._getsocket.recv(1)
         except socket.error as error:
             # 11: Resource temporarily unavailable raised on unix system then nothing to read
-            # 10035: raised on windows systems hen nothing to read
-            if error.errno not in  [11, 10035]:
+            # 10035: raised on windows systems then nothing to read
+            if error.errno not in [11, 10035]:
                 raise
 
     def _get(self, *args, **kwargs):
