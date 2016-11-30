@@ -500,7 +500,9 @@ class PollableQueue(Queue.Queue):
         try:
             self._getsocket.recv(1)
         except socket.error as error:
-            if error.errno != 11:  # Resource temporarily unavailable
+            # 11: Resource temporarily unavailable raised on unix system then nothing to read
+            # 10035: raised on windows systems hen nothing to read
+            if error.errno not in  [11, 10035]:
                 raise
 
     def _get(self, *args, **kwargs):
@@ -820,7 +822,12 @@ class Scheduler(object):
 
                 wait = max(0, next_time - time.time()) if self._time_based else 1
 
-                (sockets, _, _) = select.select(self._queue_base_sockets, [], [], wait)
+                # windows systems do not handle empty select
+                if self._queue_base_sockets:
+                    (sockets, _, _) = select.select(self._queue_base_sockets, [], [], wait)
+                else:
+                    sockets = []
+                    time.sleep(wait)
 
                 # processing time based threads
                 if self._time_based:
@@ -865,7 +872,12 @@ class Scheduler(object):
 
                 if self._stoped:
                     return
-                (sockets, _, _) = select.select(self._user_queue_sockets, [], [], 1)
+                # windows systems do not handle empty select
+                if self._user_queue_sockets:
+                    (sockets, _, _) = select.select(self._user_queue_sockets, [], [], 1)
+                else:
+                    sockets = []
+                    time.sleep(1)
                 # processing queue based threads
                 for sock in sockets:
                     try:
@@ -885,9 +897,15 @@ class Scheduler(object):
             if self._stoped:
                 return
             try:
-                (sockets_read, sockets_write, _) = select.select(
-                    self._dht_read_sockets, self._dht_write_sockets(), [], 0.1
-                )
+                # windows systems do not handle empty select
+                if self._dht_read_sockets:
+                    (sockets_read, sockets_write, _) = select.select(
+                        self._dht_read_sockets, self._dht_write_sockets(), [], 0.1
+                    )
+                else:
+                    sockets_read = []
+                    sockets_write = []
+                    time.sleep(0.1)
             except socket.error as e:
                 self.debug(0, "recv:%r" %e )
                 raise
