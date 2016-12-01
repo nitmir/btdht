@@ -9,6 +9,7 @@ Submodules
    btdht.dht
    btdht.utils
    btdht.krcp
+   btdht.exceptions
 
 Module contents
 ---------------

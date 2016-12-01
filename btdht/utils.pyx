@@ -29,17 +29,20 @@ from threading import Thread, Lock
 from libc.stdlib cimport atoi, malloc, free
 from libc.string cimport strlen, strncmp, strcmp, strncpy, strcpy
 from cython.parallel import prange
+
 from .krcp cimport _decode_string, _decode_int as _decode_long
+from .exceptions import BcodeError
+
 cdef extern from "ctype.h":
     int isdigit(int c)
 
 #: an array mapping and int ([0-256]) to the corresponging byte (like the function :func:`chr`)
-cdef char BYTE_TO_BIT[256][8]
-# fill BYTE_TO_BIT array
+cdef char _BYTE_TO_BIT[256][8]
+# fill _BYTE_TO_BIT array
 def __init():
     for i in range(256):
         s = "{0:08b}".format(i).encode("ascii")
-        strncpy(BYTE_TO_BIT[i], <char *>s, 8)
+        strncpy(_BYTE_TO_BIT[i], <char *>s, 8)
 __init()
 del __init
 
@@ -102,11 +105,11 @@ cdef char* _id_to_longid(char* id, int size=20) nogil:
         :return: The corresponding base 2 string
         :rtype: bytes
     """
-    global BYTE_TO_BIT
+    global _BYTE_TO_BIT
     cdef char* ret = <char*>malloc((size * 8) * sizeof(char))
     cdef int i = 0
     while i < size:
-        strncpy(ret + (i*8), BYTE_TO_BIT[<unsigned char>id[i]], 8)
+        strncpy(ret + (i*8), _BYTE_TO_BIT[<unsigned char>id[i]], 8)
         i+=1
     return ret
 
@@ -128,35 +131,89 @@ def id_to_longid(char* id, int l=20):
     return u
 
 def nbit(s, n):
-    """Renvois la valeur du nième bit de la chaine s"""
+    """
+        :param bytes s: A byte string
+        :param int n: A bit number (n must be smaller than 8 times the length of ``s``)
+        :return: The value of the nth bit of ``s`` (``0`` or ``1``)
+        :rtype: int
+    """
     if six.PY3:
         c = s[n//8]
     else:
         c = ord(s[n//8])
     return int(format(c, '08b')[n % 8])
 
+
+_NFLIP_BITS = [
+    0b10000000, 0b01000000, 0b00100000, 0b00010000, 0b00001000, 0b00000100, 0b00000010, 0b00000001
+]
 def nflip(s, n):
-    """Renvois la chaine s dont la valeur du nième bit a été retourné"""
-    bit = [0b10000000, 0b01000000, 0b00100000, 0b00010000, 0b00001000, 0b00000100, 0b00000010, 0b00000001]
+    """
+        :param bytes s: A byte string
+        :param int n: A bit number (n must be smaller than 8 times the length of ``s``)
+        :return: The same string except for the nth bit was flip
+        :rtype: bytes
+    """
+    global _NFLIP_BIT
     if six.PY2:
-        return s[:n//8]  + chr(ord(s[n//8]) ^ bit[n % 8]) + s[n//8+1:]
+        return s[:n//8]  + chr(ord(s[n//8]) ^ _NFLIP_BITS[n % 8]) + s[n//8+1:]
     else:
-        return s[:n//8]  + bytes([s[n//8] ^ bit[n % 8]]) + s[n//8+1:]
+        return s[:n//8]  + bytes([s[n//8] ^ _NFLIP_BITS[n % 8]]) + s[n//8+1:]
 
+
+_NSET_BIT1 = [
+    0b10000000, 0b01000000, 0b00100000, 0b00010000, 0b00001000, 0b00000100, 0b00000010, 0b00000001
+]
+_NSET_BIT0 = [
+    0b01111111, 0b10111111, 0b11011111, 0b11101111, 0b11110111, 0b11111011, 0b11111101, 0b11111110
+]
 def nset(s, n , i):
-    bit1 = [0b10000000, 0b01000000, 0b00100000, 0b00010000, 0b00001000, 0b00000100, 0b00000010, 0b00000001]
-    bit0 = [0b01111111, 0b10111111, 0b11011111, 0b11101111, 0b11110111, 0b11111011, 0b11111101, 0b11111110]
+    """
+        :param bytes s: A byte string
+        :param int n: A bit number (n must be smaller than 8 times the length of ``s``)
+        :param int i: A bit value (``0`` or ``1``)
+        :return: ``s`` where the nth bit was set to ``i``
+        :rtype: bytes
+    """
+    global _NSET_BIT0, _NSET_BIT1
     if i == 1:
-        return s[:n//8]  + chr(ord(s[n//8]) | bit1[n % 8]) + s[n//8+1:]
+        return s[:n//8]  + chr(ord(s[n//8]) | _NSET_BIT1[n % 8]) + s[n//8+1:]
     elif i == 0:
-        return s[:n//8]  + chr(ord(s[n//8]) & bit0[n % 8]) + s[n//8+1:]
+        return s[:n//8]  + chr(ord(s[n//8]) & _NSET_BIT0[n % 8]) + s[n//8+1:]
     else:
-        raise ValueError("i doit être 0 ou 1")
-
-class BcodeError(Exception):
-    pass
+        raise ValueError("i must be 0 or 1")
 
 def enumerate_ids(size, id):
+    """
+        :param int size: A number of bit to flip in id
+        :param bytes id: A 160 bit (20 Bytes) long id
+        :return: A list of
+            ``id`` and 2 to the power of ``size`` (minus one) ids the furthest from each other
+        :rtype: list
+
+        For instance: if id=("\0" * 20) (~0 * 160), ``enumerate_ids(4, id)`` will return a list with
+          *  '\x00\x00\x00\x00\x00...' (~00000000...)
+          *  '\x80\x00\x00\x00\x00...' (~10000000...)
+          *  '@\x00\x00\x00\x00...' (~0100000000...)
+          *  '\xc0\x00\x00\x00\x00...' (~11000000...)
+
+        The can be see as the tree::
+
+                 \x00
+                 /  \
+               1/    \0
+               /      \
+             \xc0    \x00
+            1/ \0    1/ \0
+            /   \    /   \
+          \xc0 \x80  @ \x00
+
+        The root is ``id``, at each level n, we set the nth bit of of 1 left and 0 right, ``size``
+        if the level we return.
+
+        This function may be usefull to lanch multiple DHT instance with ids the most distributed
+        on the 160 bit space.
+    """
     def aux(lvl, ids):
         if lvl >= 0:
             l = []
@@ -168,11 +225,34 @@ def enumerate_ids(size, id):
             return ids
     return aux(size - 1, [id])
 
+
+def copy_doc(f1):
+    """
+        A decorator coping docstring from another function
+
+        :param f1: An object with a docstring (functions, methods, classes, ...)
+        :return: A decorator that copy the docstring of ``f1``
+    """
+    def wrap(f2):
+        f2.__doc__ = f1.__doc__
+        return f2
+    return wrap
+
 @total_ordering
 class ID(object):
+    """
+        A 160 bit (20 Bytes) string implementing the XOR distance
 
+        :param id: An optional initial value (:class:`bytes` or :class:`ID`). If not specified,
+            a random 160 bit value is generated.
+    """
     @classmethod
     def to_bytes(cls, id):
+        """
+            :param id: A :class:`bytes` or :class:`ID`
+            :return: The value of the ``id``
+            :rtype; bytes
+        """
         try:
             return id.value
         except AttributeError:
@@ -180,6 +260,9 @@ class ID(object):
 
     @staticmethod
     def __generate():
+        """
+            :return: A 20 Bytes (160 bit) random string (using ``os.urandom``)
+        """
         return os.urandom(20)
 
     def __init__(self, id=None):
@@ -188,12 +271,15 @@ class ID(object):
         else:
             self.value = self.to_bytes(id)
 
+    @copy_doc(u"".encode)
     def encode(self, c):
         return self.value.encode(c)
 
+    @copy_doc(b"".startswith)
     def startswith(self, s):
         return self.value.startswith(s)
 
+    @copy_doc(b"".__getitem__)
     def __getitem__(self, i):
         return self.value[i]
 
@@ -203,6 +289,7 @@ class ID(object):
     def __repr__(self):
         return binascii.b2a_hex(self.value).decode()
 
+    @copy_doc(b"".__eq__)
     def __eq__(self, other):
         if isinstance(other, ID):
             return self.value == other.value
@@ -211,6 +298,7 @@ class ID(object):
         else:
             return False
 
+    @copy_doc(b"".__lt__)
     def __lt__(self, other):
         if isinstance(other, ID):
             return self.value < other.value
@@ -219,10 +307,19 @@ class ID(object):
         else:
             raise TypeError("unsupported operand type(s) for <: 'ID' and '%s'" % type(other).__name__)
 
+    @copy_doc(b"".__len__)
     def __len__(self):
         return len(self.value)
 
+
     def __xor__(self, other):
+        """
+            Permor a XOR bit by bit between the current id and ``other``
+
+            :param other: A :class:`bytes` or :class:`ID`
+            :return: The resulted XORed bit by bit string
+            :rtype: bytes
+        """
         if isinstance(other, ID):
             if six.PY2:
                 return ''.join(chr(ord(a) ^ ord(b)) for a,b in zip(self.value, other.value))
@@ -237,19 +334,46 @@ class ID(object):
             raise TypeError("unsupported operand type(s) for ^: 'ID' and '%s'" % type(other).__name__)
 
     def __rxor__(self, other):
+        """
+            Permor a XOR bit by bit between the current id and ``other``
+
+            :param other: A :class:`bytes` or :class:`ID`
+            :return: The resulted XORed bit by bit string
+            :rtype: bytes
+        """
         return self.__xor__(other)
 
+    @copy_doc(b"".__hash__)
     def __hash__(self):
         return hash(self.value)
 
 def bencode(obj):
+    """
+        bencode an arbitrary object
+
+        :param obj: A combination of dict, list, bytes or int
+        :return: Its bencoded representation
+        :rtype: bytes
+
+        Notes:
+            This method is just a wrapper around :func:`_bencode`
+    """
     try:
         return _bencode(obj)
     except:
         print("%r" % obj)
         raise
-def _bencode(obj):
 
+def _bencode(obj):
+    """
+        bencode an arbitrary object
+
+        :param obj: A combination of :class:`dict`, :class:`list`, :class:`bytes` or :class:`int`
+        :return: Its bencoded representation
+        :rtype: bytes
+        :raises EnvironmentError: if ``obj`` is not a combination of :class:`dict`, :class:`list`,
+            :class:`bytes` or :class:`int`
+        """
     if isinstance(obj, int) or isinstance(obj, float):
         return b"i" + str(obj).encode() +  b"e"
     elif isinstance(obj, bytes):
@@ -270,10 +394,31 @@ def _bencode(obj):
         raise EnvironmentError("Can only encode int, str, list or dict, not %s" % type(obj).__name__)
 
 def bdecode(s):
-    return _bdecode(s)[0]
+    """
+        bdecode an bytes string
+
+        :param s: A bencoded bytes string
+        :return: Its bencoded representation
+        :rtype: A combination of :class:`dict`, :class:`list`, :class:`bytes` or :class:`int`
+        :raises BcodeError: If failing to decode ``s``
+
+        Notes:
+            This method is just a wrapper around :func:`_bdecode`
+    """
+    return _bdecode(s, len(s))[0]
 
 cdef _decode_int(char* data, int *i, int max):
-    """decode arbitrary long integer"""
+    """
+        decode an arbitrary long integer
+
+        :param bytes data: The data to decode
+        :param int i: An index of ``data`` to start decoding from
+        :param int max: the length of ``data``
+        :return: A decoded integer if ``data[i]`` is ``b'i'``else False
+        :rtype: :class:`int` or :class:`bool:class:`
+        :raises BcodeError: if reach end of data before ending decoding or if the value to
+            decode is not of the forme ``iNNNNe`` with N a digit
+    """
     cdef int j
     #cdef long long ll[1]
     #_decode_long(data, i, max, ll)
@@ -290,15 +435,29 @@ cdef _decode_int(char* data, int *i, int max):
                     if i[0] <= max:
                         return myint
                     else:
-                         raise ValueError("%s > %s : %r" % (i[0], max, data[:max]))
+                         raise BcodeError(
+                            "Reach end of data before end of decoding %s > %s : %r" % (
+                                i[0], max, data[:max]
+                            )
+                        )
             else:
                 with gil:
-                    raise ValueError("%s != e at %s %r" % (data[j], j, data[:max]))
+                    raise BcodeError("%s != e at %s %r" % (data[j], j, data[:max]))
         else:
             with gil:
                 return False
 
 cdef _decode_list(char* data, int* i, int max):
+    """
+        decode a list
+
+        :param bytes data: The data to decode
+        :param int i: An index of ``data`` to start decoding from
+        :param int max: the length of ``data``
+        :return: A decoded list of decoded elements
+        :rtype: list
+        :raises BcodeError: if reach end of data before ending decoding or failing to decode a value
+    """
     cdef int j[1]
     i[0]+=1
     l = []
@@ -316,11 +475,22 @@ cdef _decode_list(char* data, int* i, int max):
                     _decode_string(data, i, max, j)
                 l.append(data[j[0]:i[0]])
             else:
-                raise ValueError("??? %s" % data[i[0]])
+                raise BcodeError("Unknown type, starting with %r" % data[i[0]])
     i[0]+=1
     return l
 
 cdef _decode_dict(char* data, int* i, int max):
+    """
+        decode a dict
+
+        :param bytes data: The data to decode
+        :param int i: An index of ``data`` to start decoding from
+        :param int max: the length of ``data``
+        :return: A decoded dict of decoded elements
+        :rtype: dict
+        :raises BcodeError: if reach end of data before ending decoding or failing to decode a value
+            or one of the dict key is not of type bytes
+    """
     cdef int j[1]
     i[0]+=1
     d = {}
@@ -332,9 +502,9 @@ cdef _decode_dict(char* data, int* i, int max):
                     _decode_string(data, i, max, j)
                 key = data[j[0]:i[0]]
             else:
-                raise ValueError("??? key must by string")
+                raise BcodeError("dict key must be string, and thus start with a digit")
             if data[i[0]] == b'e':
-                raise ValueError("??? key without value")
+                raise BcodeError("dict key without value")
             if data[i[0]] == b'i':
                 d[key]=_decode_int(data, i, max)
             elif data[i[0]] == b'l':
@@ -346,11 +516,23 @@ cdef _decode_dict(char* data, int* i, int max):
                     _decode_string(data, i, max, j)
                 d[key]=data[j[0]:i[0]]
             else:
-                raise ValueError("??? dict value%s" % data[i[0]])
+                raise BcodeError("Unknown type of dict value starting with %r" % data[i[0]])
     i[0]+=1
     return d
 
-cdef _decode(char* data, int max):
+cdef _bdecode(char* data, int max):
+    """
+        bdecode an bytes string
+
+        :param s: A bencoded bytes string
+        :return: A couple: (bdecoded representation, rest of the string). If only one bencoded
+            object is given as argument, then the 'rest of the string' will be empty
+        :rtype: :class:`tuple` (
+            combination of :class:`dict`, :class:`list`, :class:`bytes` or :class:`int`,
+            bytes
+        )
+        :raises BcodeError: If failing to decode ``s``
+    """
     cdef int i[1]
     cdef int j[1]
     i[0]=0
@@ -369,12 +551,10 @@ cdef _decode(char* data, int max):
                 _decode_string(data, i, max, j)
             return data[j[0]:i[0]], data[i[0]:max]
         else:
-            raise ValueError("??? dict value%s" % data[i[0]])
+            raise BcodeError("Unknown type, starting with %r" % data[i[0]])
     except ValueError as e:
         raise BcodeError(str(e))
 
-def _bdecode(s):
-    return _decode(s, len(s))
 #cdef _bdecode2(char* s, int* ii):
 #    if ii[0] > 2000 and (ii[0] % 100) == 0:
 
@@ -463,8 +643,24 @@ def ip_in_nets(ip, nets):
 
 
 class PollableQueue(Queue.Queue):
-    def __init__(self, *args, **kwargs):
-        Queue.Queue.__init__(self, *args, **kwargs)
+    """
+        A queue that can be watch using :func:`select.select`
+
+        :param int maxsize: The maximum size on the queue. If maxsize is <= 0, the queue size is
+            infinite.
+    """
+
+    #: A :class:`socket.socket` object ready for read then here is something to pull from the queue
+    sock = None
+
+    #: Internal socket that is written to then something is put on the queue
+    _putsocket = None
+    #: Alias of :attr:`sock`. Internal socket that is read from then something is pull from
+    #: the queue
+    _getsocket = None
+
+    def __init__(self, maxsize=0):
+        Queue.Queue.__init__(self, maxsize=maxsize)
         # Create a pair of connected sockets
         if os.name == 'posix':
             self._putsocket, self._getsocket = socket.socketpair()

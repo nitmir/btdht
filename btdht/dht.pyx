@@ -78,30 +78,36 @@ cdef class DHT_BASE:
     """
     cdef char _myid[20]
 
+    #: :class:`str` interface the dht is binded to
+    bind_ip = "0.0.0.0"
+    #: :class:`int` port the dht is binded to
+    bind_port = None
+    #: :class:`int` the dht instance verbosity level
+    debuglvl = 0
+    #: last time we received any message
+    last_msg = 0
+    #: last time we receive a response to one of our messages
+    last_msg_rep = 0
+    #: :class:`set` of ignored ip in dotted notation
+    ignored_ip = []
     #: :class:`list` of default ignored ip networks
     ignored_net = [
         '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16',
         '172.16.0.0/12', '192.0.0.0/24', '192.0.2.0/24', '192.168.0.0/16', '198.18.0.0/15',
         '198.51.100.0/24', '203.0.113.0/24', '224.0.0.0/4', '240.0.0.0/4', '255.255.255.255/32'
     ]
-    #: :class:`str` prefixing all debug message
-    prefix = ""
-    #: :class:`set` of ignored ip in dotted notation
-    ignored_ip = []
-    #: :class:`RoutingTable` the used instance of the routing table 
-    root = None
-    #: :class:`int` port the dht is binded to
-    bind_port = None
-    #: :class:`str` interface the dht is binded to
-    bind_ip = "0.0.0.0"
     #: :class:`utils.ID` the dht instance id, 160bits long (20 Bytes)
     myid = None
-    #: :class:`int` the dht instance verbosity level
-    debuglvl = 0
+    #: :class:`str` prefixing all debug message
+    prefix = ""
+    #: :class:`RoutingTable` the used instance of the routing table
+    root = None
+    #: The current dht :class:`socket.Socket`
+    sock = None
+    #: the state (stoped ?) of the dht
+    stoped = True
     #: :class:`list` of the :class:`Thread<threading.Thread>` of the dht instance
     threads = []
-    #: Map beetween transaction id and messages type (to be able to match responses)
-    transaction_type = {}
     #: Token send with get_peers response. Map between ip addresses and a list of random token.
     #: A new token by ip is genereted at most every 5 min, a single token is valid 10 min.
     #: On reception of a announce_peer query from ip, the query is only accepted if we have a
@@ -110,29 +116,21 @@ cdef class DHT_BASE:
     #: Tokens received on get_peers response. Map between ip addresses and received token from ip.
     #: Needed to send announce_peer to that particular ip.
     mytoken = {}
-    #: The current dht :class:`socket.Socket`
-    sock = None
+    #: Map beetween transaction id and messages type (to be able to match responses)
+    transaction_type = {}
     #: A :class:`PollableQueue` of messages (data, (ip, port)) to send
     to_send = PollableQueue()
-    #: the state (stoped ?) of the dht
-    stoped = True
-    #: last time we received any message
-    last_msg = 0
-    #: last time we receive a response to one of our messages
-    last_msg_rep = 0
     #: A list of looping iterator to schedule. Calling :meth:`schedule` will do a scheduling for
     #: 1 DHT instance
     to_schedule = []
 
-
-
     #: Map torrent hash -> peer ip and port -> received time. hash, ip and port are from
     #: announce_peer query messages. time is the time of the received message. We only keep the
-    #: 100 most recent (ip, port). A (ip, port) couple is kept max 30min 
+    #: 100 most recent (ip, port). A (ip, port) couple is kept max 30min
     _peers=collections.defaultdict(collections.OrderedDict)
     #: Map torrent hash -> peer ip and port -> received time. hash, ip and port are from get_peers
     #: response messages. time is the time of the received message. We keep the 1000 most recent
-    #: (ip, port). A (ip, port) couple is kept max 15min 
+    #: (ip, port). A (ip, port) couple is kept max 15min
     _got_peers=collections.defaultdict(collections.OrderedDict)
     #: internal heap structure used to find the K closed nodes in the DHT from one id
     _get_peer_loop_list = []
@@ -410,7 +408,7 @@ cdef class DHT_BASE:
         :param str msg: The debug message to print
 
         Note:
-            duplicate messages are removed:
+            duplicate messages are removed
         """
         if (
             lvl <= self.debuglvl and 
@@ -1540,6 +1538,60 @@ cdef class Node:
     #: the node)
     cdef int _failed
 
+    #: UDP port of the node
+    property port:
+        def __get__(self):return self._port
+        def __set__(self, int i):self._port = i
+    #: Unix timestamp of the last received response from this node
+    property last_response:
+        def __get__(self):return self._last_response
+        def __set__(self, int i):self._last_response = i
+    #: Unix timestamp of the last received query from this node
+    property last_query:
+        def __get__(self):return self._last_query
+        def __set__(self, int i):self._last_query = i
+    #: Number of reponse pending (increase on sending query to the node, set to 0 on reception from
+    #: the node)
+    property failed:
+        def __get__(self):return self._failed
+        def __set__(self, int i):self._failed = i
+    #: 160bits (20 Bytes) identifier of the node
+    property id:
+        def __get__(self):
+            return self._id[:20]
+    #: ``True`` if the node is a good node. A good node is a node has responded to one of our
+    #: queries within the last 15 minutes. A node is also good if it has ever responded to one of
+    #: our queries and has sent us a query within the last 15 minutes.
+    property good:
+        def __get__(self):
+            now = time.time()
+            # A good node is a node has responded to one of our queries within the last 15 minutes.
+            # A node is also good if it has ever responded to one of our queries and has sent us a query within the last 15 minutes.
+            return ((now - self.last_response) < 15 * 60) or (self.last_response > 0 and (now - self.last_query) < 15 * 60)
+
+    #: ``True`` if the node is a bad node (communication with the node is not possible). Nodes
+    #: become bad when they fail to respond to 3 queries in a row.
+    property bad:
+        def __get__(self):
+            # Nodes become bad when they fail to respond to multiple queries in a row.
+            return not self.good and self.failed > 3
+
+    #: IP address of the node in dotted notation
+    property ip:
+        def __get__(self):
+            ip = socket.inet_ntoa(self._ip[:4])
+            if ip[0] == '0':
+                raise ValueError("IP start with 0 *_* %r %r" % (ip, self._ip[:4]))
+            return ip
+        def __set__(self, ip):
+            cdef char* cip
+            if ip[0] == u'0':
+                raise ValueError("IP start with 0 *_* %r %r" % (ip, self._ip[:4]))
+            tip = socket.inet_aton(ip)
+            cip = tip
+            with nogil:
+                strncmp(self._ip, cip, 4)
+
     def __init__(self, bytes id, ip, int port, int last_response=0, int last_query=0, int failed=0):
         cdef char* cip
         cdef char* cid
@@ -1579,59 +1631,6 @@ cdef class Node:
             else:
                 return False
 
-    #: udp port of the node
-    property port:
-        def __get__(self):return self._port
-        def __set__(self, int i):self._port = i
-    #: Unix timestamp of the last received response from this node
-    property last_response:
-        def __get__(self):return self._last_response
-        def __set__(self, int i):self._last_response = i
-    #: Unix timestamp of the last received query from this node
-    property last_query:
-        def __get__(self):return self._last_query
-        def __set__(self, int i):self._last_query = i
-    #: number of reponse pending (increase on sending query to the node, set to 0 on reception from
-    #: the node)
-    property failed:
-        def __get__(self):return self._failed
-        def __set__(self, int i):self._failed = i
-    #: 160bits (20 Bytes) identifier of the node
-    property id:
-        def __get__(self):
-            return self._id[:20]
-    #: ``True`` if the node is a good node. A good node is a node has responded to one of our
-    #: queries within the last 15 minutes. A node is also good if it has ever responded to one of
-    #: our queries and has sent us a query within the last 15 minutes.
-    property good:
-        def __get__(self):
-            now = time.time()
-            # A good node is a node has responded to one of our queries within the last 15 minutes.
-            # A node is also good if it has ever responded to one of our queries and has sent us a query within the last 15 minutes.
-            return ((now - self.last_response) < 15 * 60) or (self.last_response > 0 and (now - self.last_query) < 15 * 60)
-
-    #: ``True`` if the node is a bad node (communication with the node is not possible). Nodes
-    #: become bad when they fail to respond to 3 queries in a row.
-    property bad:
-        def __get__(self):
-            # Nodes become bad when they fail to respond to multiple queries in a row.
-            return not self.good and self.failed > 3
-
-    #: ip address of the node in dotted notation
-    property ip:
-        def __get__(self):
-            ip = socket.inet_ntoa(self._ip[:4])
-            if ip[0] == '0':
-                raise ValueError("IP start with 0 *_* %r %r" % (ip, self._ip[:4]))
-            return ip
-        def __set__(self, ip):
-            cdef char* cip
-            if ip[0] == u'0':
-                raise ValueError("IP start with 0 *_* %r %r" % (ip, self._ip[:4]))
-            tip = socket.inet_aton(ip)
-            cip = tip
-            with nogil:
-                strncmp(self._ip, cip, 4)
 
     def __repr__(self):
         return "Node: %s:%s" % (self.ip, self.port)
@@ -1817,14 +1816,19 @@ class Bucket(list):
             between the root and the bucket in the routing table)
         :param iterable init: some values to store initialy in the bucket
     """
-    #: maximun number of element in the bucket
+    #: Maximun number of element in the bucket
     max_size = 8
-    #: Unix timestamp, ast time the bucket had been updated
+    #: Unix timestamp, last time the bucket had been updated
     last_changed = 0
-    #: A prefix identifier from 0 to 169 bits for the bucket
+    #: A prefix identifier from 0 to 160 bits for the bucket
     id = None
-    #: number of signifiant bit in :attr:`id`
+    #: Number of signifiant bit in :attr:`id`
     id_length = 0
+
+    @property
+    def to_refresh(self):
+        """``True`` if the bucket need refreshing"""
+        return time.time() - self.last_changed > 15 * 60
 
     __slot__ = ("id", "id_length")
 
@@ -1986,11 +1990,6 @@ class Bucket(list):
         l = [n for l in zip(self, bucket) for n in l if n.good][:self.max_size]
         return Bucket(id=self.id, id_length=self.id_length - 1, init=l)
 
-    @property
-    def to_refresh(self):
-        return time.time() - self.last_changed > 15 * 60
-
-
     def __hash__(self):
         return hash(utils.id_to_longid(ID.to_bytes(self.id))[:self.id_length])
 
@@ -2023,9 +2022,9 @@ class RoutingTable(object):
     """
     #: :class:`int` the routing table instance verbosity level
     debuglvl = 0
-    #: the routing table storage data structure, an instance of :class:`datrie.Trie`
+    #: The routing table storage data structure, an instance of :class:`datrie.Trie`
     trie = None
-    #: the state (stoped ?) of the routing table
+    #: The state (stoped ?) of the routing table
     stoped = True
     #: Is a merge sheduled ?
     need_merge = False
@@ -2033,27 +2032,28 @@ class RoutingTable(object):
     threads = []
     #: A class:`list` of couple (weightless thread name, weightless thread function)
     to_schedule = []
-    #: prefix in logs and threads name
+    #: Prefix in logs and threads name
     prefix = ""
-    #: current height of the tree :attr:`trie` structure of the routing table
+
+    #: Current height of the tree :attr:`trie` structure of the routing table
     _heigth = 1
     #: A set of registered dht instance with this routing table
     _dhts = set()
     #: A set of torrent id
     _info_hash = set()
-    #: a set of dht id
+    #: A set of dht id
     _split_ids = set()
-    #: internal list of supposed alive threads
+    #: Internal list of supposed alive threads
     _threads = []
-    #: a set of bucket id to merge (keys of :class:`datrie.Trie`)
+    #: A set of bucket id to merge (keys of :class:`datrie.Trie`)
     _to_merge = set()
-    #: internal list of supposed zombie (asked to stop but still running) threads
+    #: Internal list of supposed zombie (asked to stop but still running) threads
     _threads_zombie= []
-    #: last debug message, use to prevent duplicate messages over 5 seconds
+    #: Last debug message, use to prevent duplicate messages over 5 seconds
     _last_debug = ""
-    #: time of the lat debug message, use to prevent duplicate messages over 5 seconds
+    #: Time of the last debug message, use to prevent duplicate messages over 5 seconds
     _last_debug_time = 0
-    #: a :class:`utils.Scheduler` instance
+    #: A :class:`utils.Scheduler` instance
     _scheduler = None
     #: A :class:`threading.Lock` instance to prevent concurrent start to happend
     _lock = None
@@ -2113,6 +2113,7 @@ class RoutingTable(object):
 
     @property
     def zombie(self):
+        """``True`` if dht is stopped but one thread or more remains alive, ``False`` otherwise"""
         return self.stoped and [t for t in self._threads if t.is_alive()]
 
     def start(self, **kwargs):
