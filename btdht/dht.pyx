@@ -41,7 +41,9 @@ except ImportError:
 import datrie
 
 import utils
-from utils import ID, nbit, nflip, nset, SplitQueue, PollableQueue
+from .utils import ID, nbit, nflip, nset, PollableQueue
+from .exceptions import BucketFull, BucketNotFull, NoTokenError, FailToStop, TransactionIdUnknown
+from .exceptions import NotFound
 
 from .krcp cimport BMessage
 from .krcp import BError, ProtocolError, GenericError, ServerError, MethodUnknownError, MissingT
@@ -1506,21 +1508,6 @@ cdef class DHT_BASE:
             raise ProtocolError(msg.t, b"Message malformed")
 
 
-class BucketFull(Exception):
-    pass
-
-class BucketNotFull(Exception):
-    pass
-
-class NoTokenError(Exception):
-    pass
-
-class FailToStop(Exception):
-    pass
-
-class TransactionIdUnknown(Exception):
-    pass
-
 cdef class Node:
     """
         A node of the dht in the routing table
@@ -2026,9 +2013,6 @@ class Bucket(list):
 
 DHT = type("DHT", (DHT_BASE,), {'__doc__': DHT_BASE.__doc__})
 
-
-class NotFound(Exception):
-    pass
 
 class RoutingTable(object):
     """

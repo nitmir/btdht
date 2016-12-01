@@ -25,7 +25,8 @@ from cython.parallel import prange
 
 import six
 
-from btdht import utils
+import utils
+from .exceptions import MissingT, DecodeError
 
 cdef int str_to_int(char* data, int len) nogil:
     cdef char* msg = NULL
@@ -241,10 +242,6 @@ class MethodUnknownError(BError):
     def __init__(self, t, msg=b"Method Unknow"):
         super(MethodUnknownError, self).__init__(t=t, e=[204, msg])
 
-class MissingT(ValueError):
-    pass
-class DecodeError(ValueError):
-    pass
 
 cdef class BMessage:
     cdef int set_r(self, int value) nogil:
