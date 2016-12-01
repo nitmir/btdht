@@ -93,9 +93,16 @@ cdef int _decode_pass_list(char* data, int *i, int max) nogil except -1:
         return False
     i[0]+=1
     while data[i[0]] != b'e' and i[0] < max:
-        if not _decode_string(data, i, max, j) and not  _decode_int(data, i, max, ll) and not _decode_pass_list(data, i, max) and not _decode_pass_dict(data, i, max):
+        if (
+            not _decode_string(data, i, max, j) and
+            not  _decode_int(data, i, max, ll) and
+            not _decode_pass_list(data, i, max) and
+            not _decode_pass_dict(data, i, max)
+        ):
             with gil:
-                raise DecodeError("Unable to parse one of the element of the list %d %r" % (i[0], data[:max]))
+                raise DecodeError(
+                    "Unable to parse one of the element of the list %d %r" % (i[0], data[:max])
+                )
     if i[0] >= max:
         with gil:
             raise DecodeError("list_pass: %s > %s : %r" % (i[0], max, data[:max]))
@@ -114,9 +121,19 @@ cdef int _decode_pass_dict(char* data, int *i, int max) nogil except -1:
         return False
     i[0]+=1
     while data[i[0]] != b'e' and i[0] < max:
-        if not _decode_string(data, i, max, j) or (not _decode_string(data, i, max, j) and not _decode_int(data, i, max, ll) and not _decode_pass_list(data, i, max) and not _decode_pass_dict(data, i, max)):
+        if (
+            not _decode_string(data, i, max, j) or
+            (
+                not _decode_string(data, i, max, j) and
+                not _decode_int(data, i, max, ll) and
+                not _decode_pass_list(data, i, max) and
+                not _decode_pass_dict(data, i, max)
+            )
+        ):
             with gil:
-                raise DecodeError("Unable to parse one of the element of the dict %d %r" % (i[0], data[:max]))
+                raise DecodeError(
+                    "Unable to parse one of the element of the dict %d %r" % (i[0], data[:max])
+                )
     if i[0] >= max:
         with gil:
             raise DecodeError("dict_pass: %s > %s : %r" % (i[0], max, data[:max]))
@@ -212,7 +229,9 @@ cdef int _encode_string(char* data, int* i, int max, char* str, int strlen) nogi
 class BError(Exception):
     y = b"e"
     t = None # string value representing a transaction ID
-    e = None # a list. The first element is an integer representing the error code. The second element is a string containing the error message
+    # a list. The first element is an integer representing the error code.
+    # The second element is a string containing the error message
+    e = None
     def __init__(self, t, e, **kwargs):
         if t is None:
             raise ValueError("t should not be None")
@@ -788,7 +807,10 @@ cdef class BMessage:
         if self.r or self.a or self.e: # only one can be True
             estimated_len+=2 + 3 # the d and e of the a ou r dict
         if self.e:
-            estimated_len+=int_length(self._errno) + 2 + self.errmsg_len + 1 + int_length(self.errmsg_len)
+            estimated_len+=(
+                int_length(self._errno) + 2 +
+                self.errmsg_len + 1 + int_length(self.errmsg_len)
+            )
         if self.r or self.a:
             if self.has_id:
                 estimated_len+=23 + 4
@@ -1167,7 +1189,9 @@ cdef class BMessage:
             c+=1
         if i[0] >=  max or data[i[0]] != b'e':
             with gil:
-                raise DecodeError("End of values list not found %s >= %s found %s elements" % (i[0], max, c))
+                raise DecodeError(
+                    "End of values list not found %s >= %s found %s elements" % (i[0], max, c)
+                )
         i[0] = k
         values = <char **>malloc(c * sizeof(char*))
         c=0

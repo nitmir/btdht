@@ -10,4 +10,6 @@
 #
 # (c) 2015 Valentin Samir
 
-from btdht.dht import  DHT, DHT_BASE, ID, Node, Bucket, RoutingTable, NotFound, BucketFull, NoTokenError
+from btdht.dht import  DHT, DHT_BASE, Node, Bucket, RoutingTable
+from btdht.utils import ID
+from btdht.exceptions import NotFound, BucketFull, NoTokenError

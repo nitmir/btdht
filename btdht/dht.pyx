@@ -190,7 +190,10 @@ cdef class DHT_BASE:
         self._scheduler = utils.Scheduler() if scheduler is None else scheduler
 
         # initialising the routing table
-        self.root = RoutingTable(scheduler=self._scheduler, prefix=prefix) if routing_table is None else routing_table
+        if routing_table is None:
+            self.root = RoutingTable(scheduler=self._scheduler, prefix=prefix)
+        else:
+            self.root = routing_table
 
         self.bind_port = bind_port
         self.bind_ip = bind_ip
@@ -606,7 +609,10 @@ cdef class DHT_BASE:
             ts = time.time() + delay
             closest = self.get_closest_nodes(hash)
             typ = "peers"
-            heapq.heappush(self._get_peer_loop_list, (ts, hash, tried_nodes, closest, typ, callback, limit))
+            heapq.heappush(
+                self._get_peer_loop_list,
+                (ts, hash, tried_nodes, closest, typ, callback, limit)
+            )
             if block:
                 while hash in self._get_peer_loop_lock and not self.stoped:
                     peers = self._get_peers(hash, compact=False)
@@ -642,7 +648,9 @@ cdef class DHT_BASE:
                     stop()
                     return
                 # fetch next hash to process
-                (ts, hash, tried_nodes, closest, typ, callback, limit) = heapq.heappop(self._get_peer_loop_list)
+                (
+                    ts, hash, tried_nodes, closest, typ, callback, limit
+                ) = heapq.heappop(self._get_peer_loop_list)
                 if typ not in ["peers", "closest"]:
                     raise ValueError("typ should not be %s" % typ)
                 # if process time is in the past process it
@@ -660,7 +668,13 @@ cdef class DHT_BASE:
                             tried_nodes.add(node)
                         ts = time.time() + 2
                         # we search peers and we found as least limit of them
-                        if (typ == "peers" and limit and hash in self._got_peers and self._got_peers[hash] and len(self._got_peers[hash])>=limit):
+                        if (
+                            typ == "peers" and
+                            limit and
+                            hash in self._got_peers and
+                            self._got_peers[hash] and
+                            len(self._got_peers[hash])>=limit
+                        ):
                             self.debug(2, "Hash %s find peers" % binascii.b2a_hex(hash))
                             if callback:
                                 callback(self._get_peers(hash, compact=False))
@@ -673,7 +687,10 @@ cdef class DHT_BASE:
                             on_stop(hash, typ)
                         # Else had it the the heap to be processed later
                         else:
-                            heapq.heappush(self._get_peer_loop_list, (ts, hash, tried_nodes, _closest, typ, callback, limit))
+                            heapq.heappush(
+                                self._get_peer_loop_list,
+                                (ts, hash, tried_nodes, _closest, typ, callback, limit)
+                            )
                         del node
                         del ts
                     else:
@@ -683,9 +700,13 @@ cdef class DHT_BASE:
                             if callback:
                                 callback(self._get_peers(hash, compact=False))
                             on_stop(hash, typ)
-                        # we did not found peers nor closest node althougth we ask every close nodes we know of
+                        # we did not found peers nor closest node althougth we ask every close nodes
+                        # we know of
                         else:
-                            self.debug(2, "Hash %s not peers or nodes not found" % binascii.b2a_hex(hash))
+                            self.debug(
+                                2,
+                                "Hash %s not peers or nodes not found" % binascii.b2a_hex(hash)
+                            )
                             if callback:
                                 callback([])
                             on_stop(hash, typ)
@@ -694,7 +715,10 @@ cdef class DHT_BASE:
                 else:
                     # if fetch time in the future, sleep until that date
                     tosleep = max(1, ts - time.time())
-                    heapq.heappush(self._get_peer_loop_list, (ts, hash, tried_nodes, closest, typ, callback, limit))
+                    heapq.heappush(
+                        self._get_peer_loop_list,
+                        (ts, hash, tried_nodes, closest, typ, callback, limit)
+                    )
                     break
                 del tried_nodes
                 del closest
@@ -727,23 +751,33 @@ cdef class DHT_BASE:
         elif not info_hash in self._got_peers and not compact:
             return None
         else:
-           try:
-               # In compact mode (to send over udp) return at most 70 peers to avoid udp fragmentation
-               if compact:
-                   peers = [(-t,ip,port) for ((ip, port), t) in six.iteritems(self._peers[info_hash])]
-                   # putting the more recent annonces in first
-                   peers.sort()
-                   return [struct.pack("!4sH", socket.inet_aton(ip), port) for (_, ip, port) in peers[0:70]]
-               else:
-                   peers = [(-t,ip,port) for ((ip, port), t) in six.iteritems(self._got_peers[info_hash])]
-                   # putting the more recent annonces in first
-                   peers.sort()
-                   return [(ip, port) for (_, ip, port) in peers]
-           except KeyError:
-               if errno > 20:
-                   raise
-               time.sleep(0.1)
-               return self._get_peers(info_hash, compact, errno=errno+1)
+            try:
+                # In compact mode (to send over udp) return max 70 peers to avoid udp fragmentation
+                if compact:
+                    peers = [
+                        (-t,ip,port) for ((ip, port), t) in six.iteritems(self._peers[info_hash])
+                    ]
+                    # putting the more recent annonces in first
+                    peers.sort()
+                    return [
+                        struct.pack("!4sH", socket.inet_aton(ip), port)
+                        for (_, ip, port)
+                        in peers[0:70]
+                    ]
+                else:
+                    peers = [
+                        (-t,ip,port)
+                        for ((ip, port), t)
+                        in six.iteritems(self._got_peers[info_hash])
+                    ]
+                    # putting the more recent annonces in first
+                    peers.sort()
+                    return [(ip, port) for (_, ip, port) in peers]
+            except KeyError:
+                if errno > 20:
+                    raise
+                time.sleep(0.1)
+                return self._get_peers(info_hash, compact, errno=errno+1)
 
     def get_closest_nodes(self, id, compact=False):
         """
@@ -776,7 +810,9 @@ cdef class DHT_BASE:
     def bootstarp(
         self,
         addresses=[
-            ("router.utorrent.com", 6881), ("grenade.genua.fr", 6880), ("dht.transmissionbt.com", 6881)
+            ("router.utorrent.com", 6881),
+            ("grenade.genua.fr", 6880),
+            ("dht.transmissionbt.com", 6881)
         ]
     ):
         """
@@ -1482,10 +1518,16 @@ cdef class DHT_BASE:
             elif msg.y == b"e":
                 query = self.transaction_type.get(msg.t, (None, None, None))[2]
                 if msg.errno == 201:
-                    self.debug(2, "ERROR:201:%s pour %r" % (msg.errmsg, self.transaction_type.get(msg.t, {})))
+                    self.debug(
+                        2,
+                        "ERROR:201:%s pour %r" % (msg.errmsg, self.transaction_type.get(msg.t, {}))
+                    )
                     return GenericError(msg.t, msg.errmsg), query
                 elif msg.errno == 202:
-                    self.debug(2, "ERROR:202:%s pour %r" % (msg.errmsg, self.transaction_type.get(msg.t, {})))
+                    self.debug(
+                        2,
+                        "ERROR:202:%s pour %r" % (msg.errmsg, self.transaction_type.get(msg.t, {}))
+                    )
                     return ServerError(msg.t, msg.errmsg), query
                 elif msg.errno == 203:
                     t = self.transaction_type.get(msg.t)
@@ -1496,7 +1538,12 @@ cdef class DHT_BASE:
                     self.debug(0 if t else 1, "ERROR:204:%s pour %r" % (msg.errmsg, t))
                     return MethodUnknownError(msg.t, msg.errmsg), query
                 else:
-                    self.debug(3, "ERROR:%s:%s pour %r" % (msg.errno, msg.errmsg, self.transaction_type.get(msg.t, {})))
+                    self.debug(
+                        3,
+                        "ERROR:%s:%s pour %r" % (
+                            msg.errno, msg.errmsg, self.transaction_type.get(msg.t, {})
+                        )
+                    )
                     raise MethodUnknownError(msg.t, b"Error code %s unknown" % msg.errno)
             else:
                 raise ValueError("UNKNOWN MSG: %r decoded as %r from %r" % (s, msg, addr))
@@ -1566,8 +1613,12 @@ cdef class Node:
         def __get__(self):
             now = time.time()
             # A good node is a node has responded to one of our queries within the last 15 minutes.
-            # A node is also good if it has ever responded to one of our queries and has sent us a query within the last 15 minutes.
-            return ((now - self.last_response) < 15 * 60) or (self.last_response > 0 and (now - self.last_query) < 15 * 60)
+            # A node is also good if it has ever responded to one of our queries and has sent us
+            # a query within the last 15 minutes.
+            return (
+                ((now - self.last_response) < 15 * 60) or
+                (self.last_response > 0 and (now - self.last_query) < 15 * 60)
+            )
 
     #: ``True`` if the node is a bad node (communication with the node is not possible). Nodes
     #: become bad when they fail to respond to 3 queries in a row.
@@ -1604,7 +1655,9 @@ cdef class Node:
         with nogil:
             if not port > 0 and port < 65536:
                 with gil:
-                    raise ValueError("Invalid port number %s, sould be within 1 and 65535 for %s" % (port, ip))
+                    raise ValueError(
+                        "Invalid port number %s, sould be within 1 and 65535 for %s" % (port, ip)
+                    )
             #self._id = <char*>malloc(20 * sizeof(char))
             strncpy(self._id, cid, 20)
             #self._ip = <char*>malloc(4  * sizeof(char))
@@ -1621,13 +1674,41 @@ cdef class Node:
             elif op == 3: # !=
                 return other.id != self.id
             elif op == 0: # <
-                return max(self.last_response, self.last_query) < max(other.last_response, other.last_query)
+                return max(
+                    self.last_response,
+                    self.last_query
+                ) < max(
+                    other.last_response,
+                    other.last_query
+                )
             elif op == 4: # >
-                return not (max(self.last_response, self.last_query) < max(other.last_response, other.last_query)) and not (other.id == self.id)
+                return not (
+                    max(
+                        self.last_response,
+                        self.last_query
+                    ) < max(
+                        other.last_response,
+                        other.last_query
+                    )
+                ) and not (other.id == self.id)
             elif op == 1: # <=
-                return max(self.last_response, self.last_query) < max(other.last_response, other.last_query) or (other.id == self.id)
+                return max(
+                    self.last_response,
+                    self.last_query
+                ) < max(
+                    other.last_response,
+                    other.last_query
+                ) or (other.id == self.id)
             elif op == 5: # >=
-                return not (max(self.last_response, self.last_query) < max(other.last_response, other.last_query))
+                return not (
+                    max(
+                        self.last_response,
+                        self.last_query
+                    ) < max(
+                        other.last_response,
+                        other.last_query
+                    )
+                )
             else:
                 return False
 
@@ -1848,7 +1929,11 @@ class Bucket(list):
                         return False
                 return True
             except IndexError as e:
-                print("%r i:%s selfid:%s:%s:%r nodeid:%d:%r %r" % (e, i, len(self.id), self.id_length, self.id, len(id), id, self))
+                print(
+                    "%r i:%s selfid:%s:%s:%r nodeid:%d:%r %r" % (
+                        e, i, len(self.id), self.id_length, self.id, len(id), id, self
+                    )
+                )
                 return False
         else:
             return False
@@ -2007,7 +2092,9 @@ class Bucket(list):
             else:
                 return self.id_length < other.id_length
         except AttributeError:
-            raise ValueError("%s not comparable with %s" % (other.__class__.__name__, self.__class__.__name__))
+            raise ValueError(
+                "%s not comparable with %s" % (other.__class__.__name__, self.__class__.__name__)
+            )
 
 
 DHT = type("DHT", (DHT_BASE,), {'__doc__': DHT_BASE.__doc__})
@@ -2106,7 +2193,10 @@ class RoutingTable(object):
             else:
                 break
         if self._threads:
-            self.debug(0, "Unable to stop %s threads, giving up:\n%r" % (len(self._threads), self._threads))
+            self.debug(
+                0,
+                "Unable to stop %s threads, giving up:\n%r" % (len(self._threads), self._threads)
+            )
             self.zombie = True
             self._threads_zombie.extend(self._threads)
             self._threads = []
@@ -2547,7 +2637,11 @@ class RoutingTable(object):
                         self.trie[key[:-1]] = bucket
                         del self.trie[prefix1]
                     else:
-                        self.trie[key[:-1]] = Bucket(id=bucket0.id, id_length=len(key[:-1]), init=bucket0)
+                        self.trie[key[:-1]] = Bucket(
+                            id=bucket0.id,
+                            id_length=len(key[:-1]),
+                            init=bucket0
+                        )
                     del self.trie[prefix0]
                     stack.append(key[:-1])
                 except KeyError:
@@ -2560,5 +2654,10 @@ class RoutingTable(object):
 
         if full_merge:
             self._heigth = max(len(k) for k in self.trie.keys()) + 1
-            self.debug(1, "%s nodes merged in %ss" % (nodes_before - self.stats()[0], int(time.time() - started)))
+            self.debug(
+                1,
+                "%s nodes merged in %ss" % (
+                    nodes_before - self.stats()[0], int(time.time() - started)
+                )
+            )
 

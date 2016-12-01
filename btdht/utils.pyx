@@ -305,7 +305,9 @@ class ID(object):
         elif isinstance(other, str):
             return self.value < other
         else:
-            raise TypeError("unsupported operand type(s) for <: 'ID' and '%s'" % type(other).__name__)
+            raise TypeError(
+                "unsupported operand type(s) for <: 'ID' and '%s'" % type(other).__name__
+            )
 
     @copy_doc(b"".__len__)
     def __len__(self):
@@ -331,7 +333,9 @@ class ID(object):
             else:
                 return bytes([a ^ b for a,b in zip(self.value, other)])
         else:
-            raise TypeError("unsupported operand type(s) for ^: 'ID' and '%s'" % type(other).__name__)
+            raise TypeError(
+                "unsupported operand type(s) for ^: 'ID' and '%s'" % type(other).__name__
+            )
 
     def __rxor__(self, other):
         """
@@ -391,7 +395,9 @@ def _bencode(obj):
             d.append(v)
         return b"d" + b"".join(_bencode(o) for o in d) + b"e"
     else:
-        raise EnvironmentError("Can only encode int, str, list or dict, not %s" % type(obj).__name__)
+        raise EnvironmentError(
+            "Can only encode int, str, list or dict, not %s" % type(obj).__name__
+        )
 
 def bdecode(s):
     """
