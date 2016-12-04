@@ -70,6 +70,8 @@ cdef class DHT_BASE:
         :meth:`register_message<DHT_BASE.register_message>` method. The default to ``500``.
     :param list ignored_net: An list of ip networks in cidr notation (``"1.2.3.4/5"``) to ignore.
         The default is the value of the attribute :attr:`ignored_net`.
+    :param btdht.utils.Scheduler scheduler: A optional :class:`Scheduler<btdht.utils.Scheduler>`
+        instance. If not specified, a new :class:`Scheduler<btdht.utils.Scheduler>` is instanciated.
 
     Note:
         try to use same ``id`` and ``bind_port`` over dht restart to increase
