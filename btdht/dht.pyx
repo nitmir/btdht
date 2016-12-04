@@ -344,9 +344,10 @@ cdef class DHT_BASE:
         """
             Start the dht:
                 * initialize some attributes
+                * initialize the dht socket (see :meth:init_socket)
                 * register this instance of the dht in the routing table
                   (see :meth:`RoutingTable.register_dht`)
-                * initialize the dht socket (see :meth:init_socket)
+                * register this instance of the dht in the scheduler
                 * start the routing table if needed and ``start_routing_table` is ``True``
                 * start the scheduler if needed and ``start_scheduler`` is ``True``
 
@@ -1734,6 +1735,8 @@ cdef class Node:
     @classmethod
     def from_compact_infos(cls, infos):
         """
+            This is a classmethod
+
             Instancy nodes from multiple compact node information string
 
             :param bytes infos: A string of size multiple of 26
@@ -1766,6 +1769,8 @@ cdef class Node:
     @classmethod
     def from_compact_info(cls, info):
         """
+            This is a classmethod
+
             Instancy a node from its compact node infoformation string
 
             :param bytes info: A string of length 26
@@ -2206,7 +2211,7 @@ class RoutingTable(object):
         """``True`` if dht is stopped but one thread or more remains alive, ``False`` otherwise"""
         return self.stoped and [t for t in self._threads if t.is_alive()]
 
-    def start(self, **kwargs):
+    def start(self):
         """start the routing table"""
         with self._lock:
             if not self.stoped:
@@ -2365,7 +2370,7 @@ class RoutingTable(object):
             self.stop()
 
     def debug(self, lvl, msg):
-        """same as debug on DHT_BASE"""
+        """same as :meth:`DHT_BASE.debug`"""
         if (
             lvl <= self.debuglvl and
             (msg != self._last_debug or (time.time() - self._last_debug_time) > 5)

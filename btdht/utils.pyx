@@ -54,6 +54,9 @@ cdef char _longid_to_char(char* id) nogil:
         :param str id: A 8 Bytes long string with only 0 and 1 as characters
         :return: A single char where the nth bit correspond to the nth bytes of ``id``
         :rtype: str
+
+        Notes:
+            This function can be called without the python GIL
     """
     cdef unsigned char i = 0
     if id[0] == 1:
@@ -82,6 +85,9 @@ cdef char* _longid_to_id(char* longid, int size=160) nogil except NULL:
         :param int size: The length of ``longid``, the default is 160.
         :return: A ``size``/8 corresponding base 256 string
         :rtype: str
+
+        Notes:
+            This function can be called without the python GIL
     """
     cdef int i
     cdef char* id
@@ -104,6 +110,9 @@ cdef char* _id_to_longid(char* id, int size=20) nogil:
         :param int size: The length of ``id``
         :return: The corresponding base 2 string
         :rtype: bytes
+
+        Notes:
+            This function can be called without the python GIL
     """
     global _BYTE_TO_BIT
     cdef char* ret = <char*>malloc((size * 8) * sizeof(char))
@@ -226,7 +235,7 @@ def enumerate_ids(size, id):
     return aux(size - 1, [id])
 
 
-def copy_doc(f1):
+def _copy_doc(f1):
     """
         A decorator coping docstring from another function
 
@@ -271,15 +280,15 @@ class ID(object):
         else:
             self.value = self.to_bytes(id)
 
-    @copy_doc(u"".encode)
+    @_copy_doc(u"".encode)
     def encode(self, c):
         return self.value.encode(c)
 
-    @copy_doc(b"".startswith)
+    @_copy_doc(b"".startswith)
     def startswith(self, s):
         return self.value.startswith(s)
 
-    @copy_doc(b"".__getitem__)
+    @_copy_doc(b"".__getitem__)
     def __getitem__(self, i):
         return self.value[i]
 
@@ -289,7 +298,7 @@ class ID(object):
     def __repr__(self):
         return binascii.b2a_hex(self.value).decode()
 
-    @copy_doc(b"".__eq__)
+    @_copy_doc(b"".__eq__)
     def __eq__(self, other):
         if isinstance(other, ID):
             return self.value == other.value
@@ -298,7 +307,7 @@ class ID(object):
         else:
             return False
 
-    @copy_doc(b"".__lt__)
+    @_copy_doc(b"".__lt__)
     def __lt__(self, other):
         if isinstance(other, ID):
             return self.value < other.value
@@ -309,7 +318,7 @@ class ID(object):
                 "unsupported operand type(s) for <: 'ID' and '%s'" % type(other).__name__
             )
 
-    @copy_doc(b"".__len__)
+    @_copy_doc(b"".__len__)
     def __len__(self):
         return len(self.value)
 
@@ -347,7 +356,7 @@ class ID(object):
         """
         return self.__xor__(other)
 
-    @copy_doc(b"".__hash__)
+    @_copy_doc(b"".__hash__)
     def __hash__(self):
         return hash(self.value)
 
