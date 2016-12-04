@@ -37,10 +37,14 @@ test_venv/bin/python:
 	virtualenv test_venv
 	test_venv/bin/pip install -U --requirement requirements-dev.txt
 
+test_venv/lib/python2.7/site-packages/btdht:
+	python setup.py sdist
+	test_venv/bin/pip install --no-cache-dir --no-deps --upgrade --force-reinstall --find-links ./dist/btdht-${VERSION}.tar.gz btdht
+
 test_venv/bin/sphinx-build: test_venv
 	test_venv/bin/pip install Sphinx sphinx_rtd_theme
 
-docs: test_venv/bin/sphinx-build
+docs: test_venv/bin/sphinx-build test_venv/lib/python2.7/site-packages/btdht
 	bash -c "source test_venv/bin/activate; cd docs; make html"
 
 clean:
