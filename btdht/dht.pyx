@@ -66,8 +66,8 @@ cdef class DHT_BASE:
     :param int debuglvl: Level of verbosity, default to ``0``.
     :param str prefix: A prefix to use in logged messages. The default is ``""``.
     :param int process_queue_size: Size of the queue of messages waiting to be processed by user
-        defines functions (on_`msg`_(query|response)). see the :meth:`register_message` method.
-        The default to ``500``.
+        defines functions (on_`msg`_(query|response)). see the
+        :meth:`register_message<DHT_BASE.register_message>` method. The default to ``500``.
     :param list ignored_net: An list of ip networks in cidr notation (``"1.2.3.4/5"``) to ignore.
         The default is the value of the attribute :attr:`ignored_net`.
 
@@ -1224,9 +1224,6 @@ cdef class DHT_BASE:
               * on error reception, the function ``on_error`` will be called with the error and
                 the query as parameter
               * The message kind is in the ``q`` key of any dht query message
-
-        Args:
-          msg (str): a dht message type like ping, find_node, get_peers or announce_peer
         """
         self._to_process_registered.add(msg)
 
@@ -1503,6 +1500,10 @@ cdef class DHT_BASE:
             :return A couple (decoded message, query) if the message is a response or an error,
                 (decoded message, None) otherwise
             :rtype: tuple
+            :raises TransactionIdUnknown: If the decoded message has no ``t`` key
+            :raises MethodUnknownError: If the queried method is unknown
+            :raises ValueError: If the message is neither a query, a response or an error
+            :raises ProtocolError: If the message is malformed
         """
         msg = BMessage(addr=addr, debug=self.debuglvl)
         msg.decode(s, len(s))
@@ -1869,6 +1870,8 @@ cdef class Node:
             :param DHT_BASE dht: The dht instance to use to send the message
             :param bytes info_hash: A 160bits (20 bytes) torrent id to announce
             :param int port: The tcp port where data for ``info_hash`` is available
+            :raises NoTokenError: if we have no valid token for ``info_hash``. Try to call
+                :meth:`get_peers` on this ``info_hash`` first.
         """
 
         cdef char* tk
@@ -1978,9 +1981,9 @@ class Bucket(list):
 
     def get_node(self, id):
         """
-            :return: A :class:`Node` with :attr:`Node.id`` equal to ``id``
+            :return: A :class:`Node` with :attr:`Node.id` equal to ``id``
             :rtype: Node
-            :raises: :class:`NotFound` if no node is found within this bucket
+            :raises NotFound: if no node is found within this bucket
         """
         for n in self:
             if n.id == id:
@@ -1993,17 +1996,17 @@ class Bucket(list):
 
             :param DHT_BASE dht: The dht instance the node to add is from
             :param Node node: A node to add to the bucket
-            :raises: :class:`BucketFull` if the bucket is full
+            :raises BucketFull: if the bucket is full
 
             Notes:
                 The addition of a node to a bucket is done as follow:
-                    * if the bucket is not full, just add the node
-                    * if the bucket is full
-                        * if there is some bad nodes in the bucket, remove a bad node and add the
-                          node
-                        * if there is some questionnable nodes (neither good not bad), send a ping
-                          request to the oldest one, discard the node
-                        * if all nodes are good in the bucket, discard the node
+                * if the bucket is not full, just add the node
+                * if the bucket is full
+                    * if there is some bad nodes in the bucket, remove a bad node and add the
+                      node
+                    * if there is some questionnable nodes (neither good not bad), send a ping
+                      request to the oldest one, discard the node
+                    * if all nodes are good in the bucket, discard the node
         """
         if not self.own(node.id):
             raise ValueError("Wrong Bucket")
@@ -2044,6 +2047,8 @@ class Bucket(list):
             :return: A couple of two bucket, the first one this the last significant bit of its id
                 equal to 0, the second, equal to 1
             :rtype: tuple
+            :raises BucketNotFull: If the bucket has not :attr:`max_size` elements (and so the split
+                is not needed)
         """
         if len(self) < self.max_size:
             raise BucketNotFull("Bucket not Full %r" % self)
@@ -2102,7 +2107,15 @@ class Bucket(list):
             )
 
 
-DHT = type("DHT", (DHT_BASE,), {'__doc__': DHT_BASE.__doc__})
+DHT = type(
+    "DHT",
+    (DHT_BASE,),
+    {
+        '__doc__': "\n    A DHT class ready for instanciation\n%s" % (
+            "\n".join(DHT_BASE.__doc__.split('\n')[2:]),
+        )
+    }
+)
 
 
 class RoutingTable(object):
@@ -2464,7 +2477,7 @@ class RoutingTable(object):
             :param bytes id: A 160 bits (20 Bytes) identifier
             :return: A node with id ``id``
             :rtype: Node
-            :raises: :class:`NotFound` if no nodes is found
+            :raises NotFound: if no nodes is found
         """
         b = self.find(id)
         return b.get_node(id)

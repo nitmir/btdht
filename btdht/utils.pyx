@@ -31,7 +31,7 @@ from libc.string cimport strlen, strncmp, strcmp, strncpy, strcpy
 from cython.parallel import prange
 
 from .krcp cimport _decode_string, _decode_int as _decode_long
-from .exceptions import BcodeError
+from .exceptions import BcodeError, FailToStop
 
 cdef extern from "ctype.h":
     int isdigit(int c)
@@ -104,7 +104,7 @@ cdef char* _longid_to_id(char* longid, int size=160) nogil except NULL:
 cdef char* _id_to_longid(char* id, int size=20) nogil:
     """
         Convert a random string ``id`` of length ``size`` to its base 2 equivalent.
-        For example, "\0\xFF" is converted to "0000000011111111"
+        For example, "\\0\\xFF" is converted to "0000000011111111"
 
         :param bytes id: A random string
         :param int size: The length of ``id``
@@ -125,7 +125,8 @@ cdef char* _id_to_longid(char* id, int size=20) nogil:
 def id_to_longid(char* id, int l=20):
     """
         convert a random bytes to a unicode string of 1 and 0
-        example : "\0" -> "00000000"
+
+        For instance: ``"\\0"`` -> ``"00000000"``
 
         :param bytes id: A random string
         :param int size: The length of ``id``
@@ -141,6 +142,8 @@ def id_to_longid(char* id, int l=20):
 
 def nbit(s, n):
     """
+        Allow to retrieve the value of the nth bit of ``s``
+
         :param bytes s: A byte string
         :param int n: A bit number (n must be smaller than 8 times the length of ``s``)
         :return: The value of the nth bit of ``s`` (``0`` or ``1``)
@@ -158,6 +161,8 @@ _NFLIP_BITS = [
 ]
 def nflip(s, n):
     """
+        Allow to flip the nth bit of ``s``
+
         :param bytes s: A byte string
         :param int n: A bit number (n must be smaller than 8 times the length of ``s``)
         :return: The same string except for the nth bit was flip
@@ -178,6 +183,8 @@ _NSET_BIT0 = [
 ]
 def nset(s, n , i):
     """
+        Allow to set the value of the nth bit of ``s``
+
         :param bytes s: A byte string
         :param int n: A bit number (n must be smaller than 8 times the length of ``s``)
         :param int i: A bit value (``0`` or ``1``)
@@ -194,30 +201,33 @@ def nset(s, n , i):
 
 def enumerate_ids(size, id):
     """
+        Enumerate 2 to the power of ``size`` ids from ``id``
+
         :param int size: A number of bit to flip in id
         :param bytes id: A 160 bit (20 Bytes) long id
         :return: A list of
             ``id`` and 2 to the power of ``size`` (minus one) ids the furthest from each other
         :rtype: list
 
-        For instance: if id=("\0" * 20) (~0 * 160), ``enumerate_ids(4, id)`` will return a list with
-          *  '\x00\x00\x00\x00\x00...' (~00000000...)
-          *  '\x80\x00\x00\x00\x00...' (~10000000...)
-          *  '@\x00\x00\x00\x00...' (~0100000000...)
-          *  '\xc0\x00\x00\x00\x00...' (~11000000...)
+        For instance: if ``id=("\\0" * 20)`` (~0 * 160), ``enumerate_ids(4, id)`` will
+        return a list with
+          *  ``'\\x00\\x00\\x00\\x00\\x00...'`` (~00000000...)
+          *  ``'\\x80\\x00\\x00\\x00\\x00...'`` (~10000000...)
+          *  ``'@\\x00\\x00\\x00\\x00.......'`` (~0100000000...)
+          *  ``'\\xc0\\x00\\x00\\x00\\x00...'`` (~11000000...)
 
         The can be see as the tree::
 
-                 \x00
-                 /  \
-               1/    \0
-               /      \
-             \xc0    \x00
-            1/ \0    1/ \0
-            /   \    /   \
-          \xc0 \x80  @ \x00
+                 \\x00
+                 /  \\
+               1/    \\0
+               /      \\
+             \\xc0    \\x00
+            1/ \\0    1/ \\0
+            /   \\    /   \\
+          \\xc0 \\x80 @   \\x00
 
-        The root is ``id``, at each level n, we set the nth bit of of 1 left and 0 right, ``size``
+        The root is ``id``, at each level n, we set the nth bit to 1 left and 0 right, ``size``
         if the level we return.
 
         This function may be usefull to lanch multiple DHT instance with ids the most distributed
@@ -255,12 +265,16 @@ class ID(object):
         :param id: An optional initial value (:class:`bytes` or :class:`ID`). If not specified,
             a random 160 bit value is generated.
     """
+
+    #: :class:`bytes`, Actual value of the :class:`ID`
+    value = None
+
     @classmethod
     def to_bytes(cls, id):
         """
             :param id: A :class:`bytes` or :class:`ID`
             :return: The value of the ``id``
-            :rtype; bytes
+            :rtype: bytes
         """
         try:
             return id.value
@@ -279,10 +293,6 @@ class ID(object):
             self.value = self.__generate()
         else:
             self.value = self.to_bytes(id)
-
-    @_copy_doc(u"".encode)
-    def encode(self, c):
-        return self.value.encode(c)
 
     @_copy_doc(b"".startswith)
     def startswith(self, s):
@@ -325,7 +335,7 @@ class ID(object):
 
     def __xor__(self, other):
         """
-            Permor a XOR bit by bit between the current id and ``other``
+            Perform a XOR bit by bit between the current id and ``other``
 
             :param other: A :class:`bytes` or :class:`ID`
             :return: The resulted XORed bit by bit string
@@ -645,6 +655,8 @@ def _bdecode2(s, ii=None):
 
 def ip_in_nets(ip, nets):
     """
+        Test if ``ip`` is in one of the networks of ``nets``
+
         :param str ip: An ip, in dotted notation
         :param list nets: A list of :obj:`netaddr.IPNetwork`
         :return: ``True`` if ip is in one of the listed networks, ``False`` otherwise
@@ -719,22 +731,6 @@ class PollableQueue(Queue.Queue):
     def _get(self, *args, **kwargs):
         self._comsume_get()
         return Queue.Queue._get(self, *args, **kwargs)
-
-
-class SplitQueue(PollableQueue):
-    def _init(self, maxsize):
-        self.queue = collections.OrderedDict()
-
-    def _put(self, item):
-        if not item[0] in self.queue:
-            self.queue[item[0]] = item[1:-1] + (set(),)
-            self._signal_put()
-        self.queue[item[0]][-1].add(item[-1])
-
-    def _get(self):
-        self._comsume_get()
-        (key, value) = self.queue.popitem(False)
-        return (key, ) + value
 
 
 class Scheduler(object):
@@ -987,25 +983,30 @@ class Scheduler(object):
         t.start()
         self._threads.append(t)
 
-    def stop(self, wait=True):
-        """stop the scheduler"""
+    def stop(self):
+        """
+            stop the scheduler
+
+            :raises FailToStop: if we fail to stop one of the scheduler threads after 30 seconds
+        """
         if self._stoped:
             print("Already stoped or stoping in progress")
             return
         self._stoped = True
         self._init_attrs()
-        if wait:
-            self._threads = [t for t in self._threads[:] if t.is_alive()]
-            for i in range(0, 30):
-                if self._threads:
-                    if i > 5:
-                        print("Waiting for %s threads to terminate" % len(self._threads))
-                    time.sleep(1)
-                    self._threads = [t for t in self._threads[:] if t.is_alive()]
-                else:
-                    break
+        self._threads = [t for t in self._threads[:] if t.is_alive()]
+        for i in range(0, 30):
+            if self._threads:
+                if i > 5:
+                    print("Waiting for %s threads to terminate" % len(self._threads))
+                time.sleep(1)
+                self._threads = [t for t in self._threads[:] if t.is_alive()]
             else:
-                print("Unable to stop the scheduler threads, giving up")
+                break
+        else:
+            print("Unable to stop the scheduler threads, giving up")
+        if self._threads:
+            raise FailToStop(self._threads)
 
     def stop_bg(self):
         """Lauch the stop process of the dht and return immediately"""

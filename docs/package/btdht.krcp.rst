@@ -2,7 +2,11 @@ btdht.krcp module
 ==================
 
 .. automodule:: btdht.krcp
+    :members:
+    :undoc-members:
     :show-inheritance:
+    :exclude-members: BError, GenericError, MethodUnknownError, ProtocolError, ServerError,
+        BMessage
 
 .. autoclass:: BError
     :show-inheritance:

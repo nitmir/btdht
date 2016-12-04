@@ -94,7 +94,7 @@ Search for the peers announcing the torrent ``0403fb4728bd788fbcb67e87d6feb241ef
 
 Subsequent calls to get_peers may return more peers.
 
-You may also inherit ``htdht.DHT_BASE`` and overload some of the ``on_`msg`_(query|response)``
+You may also inherit ``btdht.DHT_BASE`` and overload some of the ``on_`msg`_(query|response)``
 functions. See the `doc <http://btdht.readthedocs.io>`_ for a full overview of the ``btdht`` API.
 
 

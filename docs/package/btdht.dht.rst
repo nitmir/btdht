@@ -2,7 +2,24 @@ btdht.dht module
 ================
 
 .. automodule:: btdht.dht
+    :members:
+    :undoc-members:
     :show-inheritance:
+    :exclude-members: DHT_BASE, DHT, Node, Bucket, RoutingTable
+
+
+.. autosummary::
+
+    DHT
+    DHT_BASE
+    Node
+    Bucket
+    RoutingTable
+
+.. autoclass:: DHT
+    :show-inheritance:
+    :members:
+    :undoc-members:
 
 
 .. autoclass:: DHT_BASE
@@ -137,11 +154,6 @@ btdht.dht module
     .. automethod:: on_ping_response(query, response)
     .. automethod:: on_error(error, query=None)
 
-
-.. autoclass:: DHT
-    :show-inheritance:
-    :members:
-    :undoc-members:
 
 .. autoclass:: Node
     :show-inheritance:
