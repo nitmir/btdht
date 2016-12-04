@@ -1,5 +1,5 @@
-btdht: An python implementation of the Bittorrent distributed hash table
-========================================================================
+btdht: A python implementation of the Bittorrent distributed hash table
+=======================================================================
 
 |github_version| |pypi_version| |licence| |doc|
 
@@ -17,16 +17,18 @@ For example, this implementation uses a bucket-based approach for the routing ta
 
 Dependencies
 ------------
- * python 2.7 or 3.4 or above
- * `datrie <https://pypi.python.org/pypi/datrie>`_
- * `netaddr <https://pypi.python.org/pypi/netaddr>`_
+
+* python 2.7 or 3.4 or above
+* `datrie <https://pypi.python.org/pypi/datrie>`_
+* `netaddr <https://pypi.python.org/pypi/netaddr>`_
 
 
 Build dependencies
 ------------------
- * A C compiler
- * `cython <https://pypi.python.org/pypi/Cython>`_
- * python header files
+
+* A C compiler
+* `cython <https://pypi.python.org/pypi/Cython>`_
+* python header files
 
 
 Installation
