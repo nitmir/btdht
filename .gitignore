@@ -1,2 +1,9 @@
-build/*
+build/
+dist/
+test_venv/
+docs/_build/
 *.c
+*~
+*.pyc
+
+btdht.egg-info

@@ -1,2 +1,3 @@
 datrie >= 0.7
 netaddr >= 0.7.12
+six >= 1.8

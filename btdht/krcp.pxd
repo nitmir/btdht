@@ -1,4 +1,4 @@
-cdef int _decode_int(char* data, int *i, int max, long long *myint) nogil except -1
+cdef long _decode_int(char* data, int *i, int max, long long *myint) nogil except -1
 cdef int _decode_string(char* data, int* i, int max, int* j) nogil except -1
 cdef class BMessage:
     cdef char* _y
@@ -42,8 +42,11 @@ cdef class BMessage:
     cdef int encoded_len
     cdef int encoded_uptodate
     cdef int debug
-    cdef char* addr_addr
+    cdef unicode addr_addr_3
+    cdef bytes addr_addr_2
     cdef int addr_port
+    cdef int failed
+    cdef char* failed_msg
 
     cdef int set_r(self, int value) nogil
     cdef int set_a(self, int value) nogil
@@ -78,7 +81,7 @@ cdef class BMessage:
     cdef void del_encoded(self) nogil
 
     cdef int _encode_values(self, char* data, int* i, int max) nogil
-        
+
     cdef int _encode_secondary_dict(self, char* data, int* i, int max) nogil
 
     cdef int _encode_error(self, char* data, int* i, int max) nogil
@@ -88,13 +91,13 @@ cdef class BMessage:
     cdef int _encode(self) nogil
 
     cdef int _encode_len(self) nogil
-        
+
     cdef int _decode_error(self, char* data, int* i, int max) nogil except -1
-        
+
     cdef int _decode_dict_elm(self, char* data, int* i, int max) nogil except -1
 
     cdef int _decode_values(self, char* data, int *i, int max) nogil except -1
-            
+
     cdef int _decode_dict(self, char* data, int *i, int max) nogil except -1
 
     cdef int _decode(self, char* data, int *i, int max) nogil except -1
