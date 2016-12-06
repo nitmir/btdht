@@ -432,6 +432,21 @@ def bdecode(s):
     """
     return _bdecode(s, len(s))[0]
 
+
+def bdecode_rest(s):
+    """
+        bdecode an bytes string
+
+        :param s: A bencoded bytes string
+        :return: A couple: (bdecoded representation, rest of the string). If only one bencoded
+            object is given as argument, then the 'rest of the string' will be empty
+        :rtype: :class:`tuple` (
+            combination of :class:`dict`, :class:`list`, :class:`bytes` or :class:`int`, bytes)
+        :raises BcodeError: If failing to decode ``s``
+    """
+    return _bdecode(s, len(s))
+
+
 cdef _decode_int(char* data, int *i, int max):
     """
         decode an arbitrary long integer
@@ -553,9 +568,7 @@ cdef _bdecode(char* data, int max):
         :return: A couple: (bdecoded representation, rest of the string). If only one bencoded
             object is given as argument, then the 'rest of the string' will be empty
         :rtype: :class:`tuple` (
-            combination of :class:`dict`, :class:`list`, :class:`bytes` or :class:`int`,
-            bytes
-        )
+            combination of :class:`dict`, :class:`list`, :class:`bytes` or :class:`int`, bytes)
         :raises BcodeError: If failing to decode ``s``
     """
     cdef int i[1]

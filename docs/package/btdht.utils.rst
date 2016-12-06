@@ -6,11 +6,12 @@ btdht.utils module
     :undoc-members:
     :show-inheritance:
     :exclude-members: ID, PollableQueue, Scheduler, id_to_longid, nbit, nflip, nset, enumerate_ids,
-        bencode, bdecode, ip_in_nets
+        bencode, bdecode, bdecode_rest, ip_in_nets
 
 .. autosummary::
     bencode
     bdecode
+    bdecode_rest
     enumerate_ids
     id_to_longid
     ip_in_nets
@@ -23,6 +24,7 @@ btdht.utils module
 
 .. autofunction:: bencode(obj)
 .. autofunction:: bdecode(s)
+.. autofunction:: bdecode_rest(s)
 .. autofunction:: enumerate_ids(size, id)
 .. autofunction:: id_to_longid(id, l=20)
 .. autofunction:: ip_in_nets(ip, nets)
