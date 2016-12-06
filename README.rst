@@ -53,8 +53,9 @@ headers (installing the packages ``build-essential`` and ``python-dev`` should b
 like systems, you'll probably gonna need ``make``, ``gcc``, ``python2-devel`` and ``redhat-rpm-config``
 on centos like systems).
 
-On windows systems, we provide pre-builded releases so just running ``pip install btdht`` should be fine.
-If you want to build from the sources of the repository, you will also need a `C compiler <https://wiki.python.org/moin/WindowsCompilers>`__.
+On windows systems, we provide pre-builded releases for python 2.7 and 3.5 so just running
+``pip install btdht`` should be fine. If you want to build from the sources of the repository or,
+for another python version, you will also need a `C compiler <https://wiki.python.org/moin/WindowsCompilers>`__.
 
 
 Usage examples
