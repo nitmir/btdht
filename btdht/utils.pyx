@@ -963,7 +963,7 @@ class Scheduler(object):
             return False
         else:
             print("One thread died, stopping scheduler")
-            self.stop(wait=False)
+            self.stop_bg()
             return False
 
     def start(self, name_prefix="scheduler"):

@@ -708,7 +708,7 @@ cdef class DHT_BASE:
                         else:
                             self.debug(
                                 2,
-                                "Hash %s not peers or nodes not found" % binascii.b2a_hex(hash)
+                                "Hash %s no peers or nodes found" % binascii.b2a_hex(hash)
                             )
                             if callback:
                                 callback([])
