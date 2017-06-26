@@ -976,7 +976,10 @@ cdef class DHT_BASE:
             # 1: premission denied
             # 10013: same as 1 but on windows
             if e.errno not in [11, 1, 10035, 10013]:
-                self.debug(0, "send:%r : (%r, %r)" % (e, data, addr))
+                try:
+                    self.debug(0, "recv:%r : (%r, %r)" % (e, data, addr))
+                except UnboundLocalError:
+                    self.debug(0, "recv:%r" % (e,))
                 raise
         except MissingT:
             pass
