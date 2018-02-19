@@ -843,13 +843,13 @@ class Scheduler(object):
         iterator = function()
         self._names[iterator] = name
         self._iterators[name] = iterator
-        typ = iterator.next()
+        typ = next(iterator)
         if typ == 0:
             if user == True:
                 raise ValueError("Only queue based threads can be put in the user loop")
             self._time_based[iterator] = 0
         elif typ == 1:
-            queue = iterator.next()
+            queue = next(iterator)
             if user == True:
                 self._user_queue[iterator] = queue
                 self._user_queue_sockets.append(queue.sock)
@@ -1062,7 +1062,7 @@ class Scheduler(object):
                         try:
                             for iterator, t in six.iteritems(self._time_based):
                                 if now >= t:
-                                    to_set.append((iterator, iterator.next()))
+                                    to_set.append((iterator, next(iterator)))
                             for iterator, t in to_set:
                                 self._time_based[iterator] = t
                         except RuntimeError:
@@ -1073,7 +1073,7 @@ class Scheduler(object):
                 for sock in sockets:
                     try:
                         iterator = self._queue_base_socket_map[sock]
-                        iterator.next()
+                        next(iterator)
                     except KeyError:
                         pass
         except StopIteration as error:
