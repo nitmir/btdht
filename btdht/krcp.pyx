@@ -1469,7 +1469,7 @@ cdef class BMessage:
                 self.addr_port = addr[1]
         def __del__(self):
             self.addr_addr = None
-            self.addr_port = None
+            self.addr_port = 0
 
     #: The ``y` key of the message. Possible value are ``"q"`` for a query, `"r"` for a response
     #: and ``"e"`` for an error.
