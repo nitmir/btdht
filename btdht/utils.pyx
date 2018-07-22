@@ -192,12 +192,14 @@ def nset(s, n , i):
         :rtype: bytes
     """
     global _NSET_BIT0, _NSET_BIT1
+    s = bytearray(s)
     if i == 1:
-        return s[:n//8]  + chr(ord(s[n//8]) | _NSET_BIT1[n % 8]) + s[n//8+1:]
+        s[n//8] = s[n//8] | _NSET_BIT1[n % 8]
     elif i == 0:
-        return s[:n//8]  + chr(ord(s[n//8]) & _NSET_BIT0[n % 8]) + s[n//8+1:]
+        s[n//8] = s[n//8] & _NSET_BIT0[n % 8]
     else:
         raise ValueError("i must be 0 or 1")
+    return bytes(s)
 
 def enumerate_ids(size, id):
     """
