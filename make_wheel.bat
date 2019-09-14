@@ -10,3 +10,7 @@ C:/Python36-32/python -m pip install wheel
 C:/Python36-32/python setup.py bdist_wheel
 C:/Python36/python -m pip install wheel
 C:/Python36/python setup.py bdist_wheel
+C:/Python37-32/python -m pip install wheel
+C:/Python37-32/python setup.py bdist_wheel
+C:/Python37/python -m pip install wheel
+C:/Python37/python setup.py bdist_wheel
