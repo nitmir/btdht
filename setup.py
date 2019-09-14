@@ -9,7 +9,7 @@ try:
 except ImportError:
     has_cython = False
 
-VERSION = "0.3.2"
+VERSION = "0.3.3"
 
 if __name__ == "__main__":
     c_extensions = [
