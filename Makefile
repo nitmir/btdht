@@ -57,6 +57,6 @@ clean_docs:
 	cd docs; make clean
 
 clean_test_venv:
-	rm -rf test_venv
+	rm -rf test_venv venv27* venv3*
 
 clean_all: clean clean_test_venv clean_docs
