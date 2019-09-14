@@ -1451,12 +1451,12 @@ cdef class BMessage:
     property addr:
         def __get__(self):
             if six.PY3:
-                if self.addr_addr_3 and self.addr_port:
+                if self.addr_addr_3 and self.addr_port > 0:
                     return (self.addr_addr_3, self.addr_port)
                 else:
                     return None
             else:
-                if self.addr_addr_2 and self.addr_port:
+                if self.addr_addr_2 and self.addr_port > 0:
                     return (self.addr_addr_2, self.addr_port)
                 else:
                     return None
@@ -1469,7 +1469,7 @@ cdef class BMessage:
                 self.addr_port = addr[1]
         def __del__(self):
             self.addr_addr = None
-            self.addr_port = None
+            self.addr_port = 0
 
     #: The ``y` key of the message. Possible value are ``"q"`` for a query, `"r"` for a response
     #: and ``"e"`` for an error.
