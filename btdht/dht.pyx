@@ -827,7 +827,7 @@ cdef class DHT_BASE:
                     * dht.transmissionbt.com:6881
                     * grenade.genua.fr:6880
         """
-        self.debug(0,"Bootstraping")
+        self.debug(0,"Bootstrapping")
         for addr in addresses:
             msg = BMessage()
             msg.y = b'q'
